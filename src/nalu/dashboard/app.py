@@ -231,19 +231,47 @@ with tab_train:
         )
 
     st.subheader("Training runs")
-    train_runs_dir = config.ROOT / "training" / "runs"
-    if not train_runs_dir.exists() or not any(train_runs_dir.iterdir()):
+    from ..agents.trainer import list_runs
+
+    runs = list_runs()
+    if not runs:
         st.info(
-            "No fine-tune runs yet. The QLoRA + mergekit runner is wired in Phase 2 — "
-            "use the dataset above as input."
+            "No fine-tune runs yet. Run `nalu train run <dataset.jsonl>` to start one — "
+            "metrics and the saved adapter will appear here."
         )
     else:
-        for run in sorted(train_runs_dir.iterdir(), reverse=True):
-            metrics_path = run / "metrics.jsonl"
-            if metrics_path.exists():
-                df = pd.DataFrame([json.loads(l) for l in metrics_path.read_text().splitlines() if l.strip()])
-                with st.expander(run.name):
-                    st.line_chart(df.set_index("step")[[c for c in df.columns if c != "step"]])
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "run": r["name"],
+                        "examples": r.get("examples", "—"),
+                        "iters": r.get("iters", "—"),
+                        "steps logged": r.get("steps_logged", 0),
+                        "last loss": r.get("last_loss", "—"),
+                        "adapter": "✓" if r.get("has_adapter") else "—",
+                    }
+                    for r in runs
+                ]
+            ),
+            use_container_width=True,
+        )
+        for r in runs:
+            metrics_path = Path(r["path"]) / "metrics.jsonl"
+            if not metrics_path.exists():
+                continue
+            df = pd.DataFrame(
+                [json.loads(l) for l in metrics_path.read_text().splitlines() if l.strip()]
+            )
+            if df.empty:
+                continue
+            with st.expander(f"{r['name']} — {df.shape[0]} steps"):
+                st.line_chart(df.set_index("step")[["train_loss"]])
+                st.caption(
+                    f"Peak mem: {df['peak_mem_gb'].max():.2f} GB  •  "
+                    f"Tokens/sec: {df['tokens_per_sec'].mean():.1f}  •  "
+                    f"Final loss: {df['train_loss'].iloc[-1]:.4f}"
+                )
 
 with tab_model:
     st.subheader("Active model")

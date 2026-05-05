@@ -42,6 +42,44 @@ def train_collect(
         console.print("  by action: " + ", ".join(f"{k}={v}" for k, v in summary.actions.items()))
 
 
+@train_app.command("run")
+def train_run(
+    dataset: Path = typer.Argument(..., help="Path to dataset.jsonl from `nalu train collect`."),
+    rank: int = typer.Option(8, help="LoRA rank."),
+    alpha: float = typer.Option(16.0, help="LoRA alpha."),
+    dropout: float = typer.Option(0.0, help="LoRA dropout."),
+    learning_rate: float = typer.Option(2e-5, "--lr", help="Adam learning rate."),
+    batch_size: int = typer.Option(1, help="Minibatch size."),
+    epochs: int = typer.Option(1, help="Passes over the dataset."),
+    iters: int = typer.Option(None, help="Override iteration count (else epochs * dataset)."),
+    out: Path = typer.Option(None, help="Override output directory."),
+) -> None:
+    """Fine-tune the vision model on a collected dataset (LoRA on quantized base)."""
+    from .agents.trainer import QLoRARunner
+
+    if not dataset.exists():
+        console.print(f"[red]dataset not found:[/red] {dataset}")
+        raise typer.Exit(1)
+
+    runner = QLoRARunner(
+        dataset_path=dataset,
+        out_dir=out,
+        lora_rank=rank,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
+        learning_rate=learning_rate,
+        batch_size=batch_size,
+        epochs=epochs,
+        iters=iters,
+    )
+    summary = runner.run()
+    console.print(f"[green]adapter saved:[/green] {summary.adapter_path}")
+    console.print(
+        f"  examples={summary.examples}  iters={summary.iters}  "
+        f"final_loss={summary.final_loss if summary.final_loss is not None else '—'}"
+    )
+
+
 @train_app.command("report")
 def train_report() -> None:
     """Show training recommendations and dataset inventory."""
