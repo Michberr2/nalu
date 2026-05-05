@@ -18,8 +18,8 @@ st.caption("Fully local. Real data only. If a panel is empty, no data exists yet
 
 config.ensure_dirs()
 
-tab_chat, tab_overview, tab_runs, tab_train, tab_model = st.tabs(
-    ["Chat", "Overview", "Runs", "Training", "Model"]
+tab_chat, tab_live, tab_overview, tab_runs, tab_train, tab_model = st.tabs(
+    ["Chat", "Live", "Overview", "Runs", "Training", "Model"]
 )
 
 
@@ -70,6 +70,57 @@ def _recent_conversation(max_items: int = 20) -> list[dict]:
         if len(out) >= max_items:
             break
     return out
+
+
+def _read_recent_events(n: int) -> list[dict]:
+    if not config.EVENTS_LOG.exists():
+        return []
+    lines = config.EVENTS_LOG.read_text().splitlines()
+    out = []
+    for line in lines[-n:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+with tab_live:
+    pid = daemon.daemon_pid()
+    if pid is None:
+        st.warning("Daemon is not running. Start with `nalu serve` to stream live events.")
+    else:
+        st.caption(f"Tailing {config.EVENTS_LOG}")
+
+    col_a, col_b, col_c = st.columns([1, 1, 4])
+    n = col_a.number_input("Show last", min_value=10, max_value=2000, value=200, step=50)
+    auto = col_b.checkbox("Auto-refresh (2s)", value=False)
+
+    events = _read_recent_events(n)
+    if not events:
+        st.info("No events yet — run `nalu ask <task>` to generate some.")
+    else:
+        df = pd.DataFrame(
+            [
+                {
+                    "ts": pd.to_datetime(e["ts"], unit="s").strftime("%H:%M:%S"),
+                    "topic": e["topic"],
+                    "source": e.get("source", ""),
+                    "payload": json.dumps(e.get("payload", {}), default=str)[:120],
+                }
+                for e in events
+            ]
+        )
+        st.dataframe(df, use_container_width=True, height=560)
+
+    if auto and pid is not None:
+        import time as _time
+
+        _time.sleep(2.0)
+        st.rerun()
 
 
 with tab_chat:

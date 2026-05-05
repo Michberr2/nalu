@@ -13,6 +13,7 @@ RUN_DIR = ROOT / "run"
 BUS_SOCKET = RUN_DIR / "bus.sock"
 DAEMON_PID = RUN_DIR / "daemon.pid"
 LOG_DIR = ROOT / "logs"
+EVENTS_LOG = LOG_DIR / "events.jsonl"
 
 VISION_MODEL = os.environ.get("NALU_VISION_MODEL", "mlx-community/UI-TARS-1.5-7B-4bit")
 TTS_VOICE = os.environ.get("NALU_TTS_VOICE", "en_GB-alan-medium")

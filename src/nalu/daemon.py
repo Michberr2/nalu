@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import sys
 import threading
 from collections import deque
+from dataclasses import asdict
 
 import structlog
 
@@ -85,6 +87,7 @@ async def serve() -> None:
     capture: ContinuousCapture | None = None
     ptt: PushToTalk | None = None
     bus_server = None
+    events_log = None
     try:
         server = BusServer()
         bus_server = await server.start()
@@ -100,6 +103,15 @@ async def serve() -> None:
         log.info("loading_vision_model", model=vision.model_id)
         await asyncio.to_thread(vision.load)
         log.info("vision_model_loaded")
+
+        events_log = config.EVENTS_LOG.open("a", buffering=1)
+
+        async def _log_event(ev) -> None:
+            events_log.write(json.dumps(asdict(ev)) + "\n")
+
+        log_bus = BusClient(source="event-log")
+        await log_bus.connect()
+        await log_bus.subscribe("*", _log_event)
 
         planner_bus = BusClient(source="planner")
         await planner_bus.connect()
@@ -185,6 +197,11 @@ async def serve() -> None:
         if bus_server is not None:
             bus_server.close()
             await bus_server.wait_closed()
+        if events_log is not None:
+            try:
+                events_log.close()
+            except Exception:
+                pass
         try:
             config.DAEMON_PID.unlink()
         except OSError:
