@@ -200,12 +200,45 @@ with tab_runs:
             st.warning("No actions.jsonl in this run.")
 
 with tab_train:
-    st.subheader("Training runs")
-    train_dir = config.ROOT / "training"
-    if not train_dir.exists() or not any(train_dir.iterdir()):
-        st.info("No training runs yet. The trainer pipeline lands in the next phase.")
+    from ..agents.trainer import collect as collect_dataset, list_datasets
+
+    st.subheader("Datasets")
+    datasets = list_datasets()
+    col_a, col_b = st.columns([1, 4])
+    if col_a.button("Collect from runs"):
+        with st.spinner("Walking runs…"):
+            summary = collect_dataset()
+        st.success(f"wrote {summary.examples} examples to {summary.out_path}")
+        datasets = list_datasets()
+
+    if not datasets:
+        st.info("No datasets yet. Click **Collect from runs** once you have a few completed sessions.")
     else:
-        for run in sorted(train_dir.iterdir(), reverse=True):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "dataset": d["name"],
+                        "examples": d["examples"],
+                        "runs scanned": d["runs_total"],
+                        "runs with done": d["runs_with_done"],
+                        "actions": ", ".join(f"{k}={v}" for k, v in d.get("actions", {}).items()),
+                    }
+                    for d in datasets
+                ]
+            ),
+            use_container_width=True,
+        )
+
+    st.subheader("Training runs")
+    train_runs_dir = config.ROOT / "training" / "runs"
+    if not train_runs_dir.exists() or not any(train_runs_dir.iterdir()):
+        st.info(
+            "No fine-tune runs yet. The QLoRA + mergekit runner is wired in Phase 2 — "
+            "use the dataset above as input."
+        )
+    else:
+        for run in sorted(train_runs_dir.iterdir(), reverse=True):
             metrics_path = run / "metrics.jsonl"
             if metrics_path.exists():
                 df = pd.DataFrame([json.loads(l) for l in metrics_path.read_text().splitlines() if l.strip()])

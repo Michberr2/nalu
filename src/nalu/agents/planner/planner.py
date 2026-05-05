@@ -41,6 +41,9 @@ class Planner:
         if not goal:
             return
         run_dir = config.new_run_dir()
+        (run_dir / "meta.json").write_text(
+            json.dumps({"goal": goal, "started_ts": time.time(), "via": ev.payload.get("via", "")})
+        )
         await self.bus.publish("task_started", {"goal": goal, "run_dir": str(run_dir)})
         actions_log = (run_dir / "actions.jsonl").open("a")
         history: list[str] = []

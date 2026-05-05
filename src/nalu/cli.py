@@ -17,8 +17,66 @@ from .bus import BusClient, BusServer
 from .capture import ContinuousCapture
 
 app = typer.Typer(help="Nalu — local vision agent.", no_args_is_help=True)
+train_app = typer.Typer(help="Build training datasets from real session logs.", no_args_is_help=True)
+app.add_typer(train_app, name="train")
 console = Console()
 log = structlog.get_logger("cli")
+
+
+@train_app.command("collect")
+def train_collect(
+    out: Path = typer.Option(None, help="Override output directory."),
+    include_failed: bool = typer.Option(False, "--include-failed", help="Include runs that never reached a done action."),
+) -> None:
+    """Walk past runs and write a JSONL dataset of (screenshot, action) examples."""
+    from .agents.trainer import collect
+
+    summary = collect(out_dir=out, only_completed=not include_failed)
+    console.print(f"[green]wrote[/green] {summary.out_path}")
+    console.print(
+        f"  runs scanned: {summary.runs_total}  "
+        f"runs with done: {summary.runs_with_done}  "
+        f"examples: {summary.examples}"
+    )
+    if summary.actions:
+        console.print("  by action: " + ", ".join(f"{k}={v}" for k, v in summary.actions.items()))
+
+
+@train_app.command("report")
+def train_report() -> None:
+    """Show training recommendations and dataset inventory."""
+    from .agents.trainer import TrainerAgent, list_datasets
+
+    trainer = TrainerAgent()
+    metrics = trainer.collect_metrics()
+    rec = trainer.recommend()
+
+    console.print("[bold]Run metrics[/bold]")
+    if metrics.get("runs", 0) == 0:
+        console.print("  no runs yet — generate some with `nalu ask`.")
+    else:
+        console.print(f"  runs: {metrics['runs']}  completed: {metrics['completed']}  failed: {metrics['failed']}")
+        console.print(f"  success rate: {metrics['success_rate']:.0%}  avg steps: {metrics['avg_steps']:.1f}")
+
+    console.print("\n[bold]Should I retrain?[/bold]")
+    if rec.should_retrain:
+        console.print("  [red]yes[/red]")
+    elif metrics.get("runs", 0) == 0:
+        console.print("  [yellow]not enough data[/yellow]")
+    else:
+        console.print("  [green]not yet[/green]")
+    for r in rec.reasons:
+        console.print(f"   • {r}")
+    for s in rec.suggested_data:
+        console.print(f"   ▸ {s}")
+
+    console.print("\n[bold]Datasets[/bold]")
+    datasets = list_datasets()
+    if not datasets:
+        console.print("  none yet — run `nalu train collect`.")
+    else:
+        for d in datasets[:10]:
+            console.print(f"  {d['name']}  examples={d['examples']}  runs={d['runs_total']}")
 
 
 @app.command()
