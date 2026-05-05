@@ -27,17 +27,39 @@ log = structlog.get_logger("cli")
 def train_collect(
     out: Path = typer.Option(None, help="Override output directory."),
     include_failed: bool = typer.Option(False, "--include-failed", help="Include runs that never reached a done action."),
+    eval_ratio: float = typer.Option(
+        0.0,
+        "--eval-ratio",
+        help="Fraction of runs to hold out as eval (0 = no split, all in train).",
+    ),
+    seed: int = typer.Option(1337, "--seed", help="Deterministic shuffle seed for split."),
 ) -> None:
     """Walk past runs and write a JSONL dataset of (screenshot, action) examples."""
     from .agents.trainer import collect
 
-    summary = collect(out_dir=out, only_completed=not include_failed)
+    if not 0.0 <= eval_ratio < 1.0:
+        console.print("[red]--eval-ratio must be in [0.0, 1.0).[/red]")
+        raise typer.Exit(1)
+
+    summary = collect(
+        out_dir=out,
+        only_completed=not include_failed,
+        eval_ratio=eval_ratio,
+        seed=seed,
+    )
     console.print(f"[green]wrote[/green] {summary.out_path}")
     console.print(
         f"  runs scanned: {summary.runs_total}  "
         f"runs with done: {summary.runs_with_done}  "
         f"examples: {summary.examples}"
     )
+    if summary.train_path and summary.eval_path:
+        console.print(
+            f"  split: train={summary.train_examples} ({len(summary.train_runs)} runs)  "
+            f"eval={summary.eval_examples} ({len(summary.eval_runs)} runs)"
+        )
+        console.print(f"  train: {summary.train_path}")
+        console.print(f"  eval:  {summary.eval_path}")
     if summary.actions:
         console.print("  by action: " + ", ".join(f"{k}={v}" for k, v in summary.actions.items()))
 

@@ -204,11 +204,21 @@ with tab_train:
 
     st.subheader("Datasets")
     datasets = list_datasets()
-    col_a, col_b = st.columns([1, 4])
+    col_a, col_b, col_c = st.columns([1, 1, 3])
+    eval_ratio = col_b.slider(
+        "Eval split", min_value=0.0, max_value=0.5, value=0.0, step=0.05,
+        help="Fraction of runs to hold out as eval (0 = all train).",
+    )
     if col_a.button("Collect from runs"):
         with st.spinner("Walking runs…"):
-            summary = collect_dataset()
-        st.success(f"wrote {summary.examples} examples to {summary.out_path}")
+            summary = collect_dataset(eval_ratio=eval_ratio)
+        if summary.train_path:
+            st.success(
+                f"wrote {summary.examples} examples — "
+                f"train={summary.train_examples} eval={summary.eval_examples}"
+            )
+        else:
+            st.success(f"wrote {summary.examples} examples to {summary.out_path}")
         datasets = list_datasets()
 
     if not datasets:
@@ -220,6 +230,8 @@ with tab_train:
                     {
                         "dataset": d["name"],
                         "examples": d["examples"],
+                        "train": d.get("train_examples") or "—",
+                        "eval": d.get("eval_examples") or "—",
                         "runs scanned": d["runs_total"],
                         "runs with done": d["runs_with_done"],
                         "actions": ", ".join(f"{k}={v}" for k, v in d.get("actions", {}).items()),
