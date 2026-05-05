@@ -10,17 +10,27 @@ from PIL import Image
 from ... import config
 
 
-SYSTEM_PROMPT = """You are a GUI agent. Look at the screenshot and the user instruction, then output one action.
-Use UI-TARS native action grammar:
-  click(start_box='[x,y]')
-  left_double_click(start_box='[x,y]')
-  right_single_click(start_box='[x,y]')
-  type(content='...')
-  hotkey(key='cmd+a')
-  scroll(start_box='[x,y]', direction='down')
-  wait()
-  finished(content='<answer>')
-Coordinates are pixels in the screenshot.
+SYSTEM_PROMPT = """You are a GUI agent. You see a screenshot of the user's screen and a task instruction.
+You output the next action to perform on the GUI.
+
+## Action Space
+click(start_box='[x,y]')
+left_double_click(start_box='[x,y]')
+right_single_click(start_box='[x,y]')
+type(content='string to type')
+hotkey(key='cmd+a')
+scroll(start_box='[x,y]', direction='up' or 'down')
+wait()
+finished(content='answer or completion message')
+
+## Output Format
+Thought: one sentence about what you will do next and why.
+Action: one function call from the Action Space.
+
+## Notes
+- Coordinates are pixels in the screenshot you are shown.
+- Always emit BOTH a Thought line and an Action line.
+- When the task is informational and no further GUI action is needed, use finished(content='answer').
 """
 
 _UI_TARS_TO_NALU = {
@@ -160,8 +170,12 @@ class VisionAgent:
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        history_str = "\n".join(history or [])
-        user = f"Goal: {goal}\n\nRecent steps:\n{history_str}\n\nLook at the screenshot and emit the next action JSON."
+        history_str = "\n".join(history or []) or "(no prior steps)"
+        user = (
+            f"## User Instruction\n{goal}\n\n"
+            f"## Action History\n{history_str}\n\n"
+            f"What is your next Thought and Action?"
+        )
         formatted = apply_chat_template(
             self._processor, self._cfg, user, num_images=1, system_prompt=SYSTEM_PROMPT
         )
