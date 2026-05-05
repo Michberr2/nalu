@@ -58,9 +58,13 @@ class TTS:
         self._voice = PiperVoice.load(str(onnx))
         self._sr = self._voice.config.sample_rate
 
-    def synthesize(self, text: str) -> tuple[np.ndarray, int]:
+    def synthesize(self, text: str, length_scale: float | None = None) -> tuple[np.ndarray, int]:
         self.load()
-        chunks = list(self._voice.synthesize(text))
+        from piper.config import SynthesisConfig
+
+        ls = length_scale if length_scale is not None else config.TTS_LENGTH_SCALE
+        syn = SynthesisConfig(length_scale=ls)
+        chunks = list(self._voice.synthesize(text, syn_config=syn))
         if not chunks:
             return np.zeros(0, dtype=np.int16), self._sr or 22050
         audio = np.concatenate([c.audio_int16_array for c in chunks])

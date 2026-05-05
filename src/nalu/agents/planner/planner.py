@@ -11,18 +11,26 @@ import structlog
 from ... import config
 from ...actuator import Actuator, ActionRefused, PauseController
 from ...bus import BusClient, Event
-from ...capture import capture_main_display
+from ...capture import ContinuousCapture, capture_main_display
 from ..vision import Action, VisionAgent
 
 log = structlog.get_logger("planner")
 
 
 class Planner:
-    def __init__(self, bus: BusClient, actuator: Actuator, vision: VisionAgent, pause: PauseController):
+    def __init__(
+        self,
+        bus: BusClient,
+        actuator: Actuator,
+        vision: VisionAgent,
+        pause: PauseController,
+        capture: ContinuousCapture | None = None,
+    ):
         self.bus = bus
         self.actuator = actuator
         self.vision = vision
         self.pause = pause
+        self.capture = capture
 
     async def run(self) -> None:
         await self.bus.subscribe("user_intent", self._on_intent)
@@ -44,7 +52,9 @@ class Planner:
                     await self.bus.publish("task_failed", {"reason": "timeout", "step": step})
                     break
 
-                shot = capture_main_display()
+                shot = self.capture.latest_frame() if self.capture else None
+                if shot is None:
+                    shot = capture_main_display()
                 shot.image.save(run_dir / f"step_{step:03d}.jpg", quality=70)
 
                 try:

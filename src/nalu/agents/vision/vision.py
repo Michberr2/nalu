@@ -10,17 +10,54 @@ from PIL import Image
 from ... import config
 
 
-SYSTEM_PROMPT = """You are Nalu's vision-action module. You see one screenshot and one user goal.
-You output exactly one action as a single JSON object on a line, nothing else.
-Schema:
-  {"action": "click", "x": <0-1280>, "y": <0-800>, "reason": "<short>"}
-  {"action": "type", "text": "<string>", "reason": "<short>"}
-  {"action": "key", "name": "return|tab|escape|...", "modifiers": ["cmd"|"shift"|...], "reason": "<short>"}
-  {"action": "scroll", "dx": <int>, "dy": <int>, "reason": "<short>"}
-  {"action": "wait", "ms": <int>, "reason": "<short>"}
-  {"action": "done", "answer": "<short>", "reason": "<short>"}
-Coordinates are in the captured image's pixel space. Be precise.
+SYSTEM_PROMPT = """You are a GUI agent. Look at the screenshot and the user instruction, then output one action.
+Use UI-TARS native action grammar:
+  click(start_box='[x,y]')
+  left_double_click(start_box='[x,y]')
+  right_single_click(start_box='[x,y]')
+  type(content='...')
+  hotkey(key='cmd+a')
+  scroll(start_box='[x,y]', direction='down')
+  wait()
+  finished(content='<answer>')
+Coordinates are pixels in the screenshot.
 """
+
+_UI_TARS_TO_NALU = {
+    "click": "click",
+    "left_click": "click",
+    "left_single_click": "click",
+    "left_double_click": "double_click",
+    "right_click": "click",
+    "right_single_click": "click",
+    "type": "type",
+    "input": "type",
+    "hotkey": "key",
+    "key": "key",
+    "scroll": "scroll",
+    "wait": "wait",
+    "finished": "done",
+    "done": "done",
+    "call_user": "done",
+}
+
+
+_BOX_TOKEN_RE = re.compile(r"<\|box_(?:start|end)\|>")
+_FUNC_CALL_RE = re.compile(r"(\w+)\s*\(([^)]*)\)")
+_COORD_RE = re.compile(r"\[?\s*(-?\d+)\s*,\s*(-?\d+)\s*\]?")
+
+
+def _strip_tokens(text: str) -> str:
+    return _BOX_TOKEN_RE.sub("", text)
+
+
+def _parse_kwargs(arg_str: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for m in re.finditer(r"(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^,]+?))(?=\s*,\s*\w+\s*=|$)", arg_str):
+        k = m.group(1)
+        v = next((g for g in m.groups()[1:] if g is not None), "")
+        out[k] = v.strip()
+    return out
 
 
 @dataclass
@@ -31,16 +68,73 @@ class Action:
 
     @classmethod
     def parse(cls, text: str) -> "Action":
-        match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
-        if not match:
-            return cls(kind="error", reason=f"no JSON in model output: {text[:200]}")
-        try:
-            obj = json.loads(match.group(0))
-        except json.JSONDecodeError as e:
-            return cls(kind="error", reason=f"bad JSON: {e}")
-        kind = obj.pop("action", "error")
-        reason = obj.pop("reason", "")
-        return cls(kind=kind, args=obj, reason=reason)
+        text = _strip_tokens(text).strip()
+
+        # Format 1: "Thought: ...\nAction: click(start_box='[x,y]')"
+        action_match = re.search(r"Action\s*:\s*(.+?)(?:\n|$)", text, re.DOTALL)
+        thought_match = re.search(r"Thought\s*:\s*(.+?)(?:\nAction|$)", text, re.DOTALL)
+        reason = thought_match.group(1).strip() if thought_match else ""
+        candidate = action_match.group(1).strip() if action_match else text
+
+        fc = _FUNC_CALL_RE.search(candidate)
+        if fc:
+            fn, raw_args = fc.group(1), fc.group(2)
+            kind = _UI_TARS_TO_NALU.get(fn.lower(), fn.lower())
+            kwargs = _parse_kwargs(raw_args)
+            args: dict[str, Any] = {}
+            for box_key in ("start_box", "box", "coordinate", "point"):
+                if box_key in kwargs:
+                    cm = _COORD_RE.search(kwargs[box_key])
+                    if cm:
+                        args["x"] = int(cm.group(1))
+                        args["y"] = int(cm.group(2))
+                    break
+            if "content" in kwargs:
+                args["text"] = kwargs["content"]
+                if kind == "done":
+                    args["answer"] = kwargs["content"]
+            if "key" in kwargs:
+                parts = [p.strip().lower() for p in kwargs["key"].split("+")]
+                args["modifiers"] = parts[:-1]
+                args["name"] = parts[-1]
+            if "direction" in kwargs:
+                d = kwargs["direction"].lower()
+                args["dx"] = 0
+                args["dy"] = -120 if d == "up" else 120 if d == "down" else 0
+            return cls(kind=kind, args=args, reason=reason or fn)
+
+        # Format 2: bare JSON {"action": "...", ...}, possibly truncated.
+        jm = re.search(r"\{[^{}]*\}?", candidate, re.DOTALL)
+        if jm:
+            blob = jm.group(0)
+            if not blob.rstrip().endswith("}"):
+                blob = blob.rstrip().rstrip(",") + "}"
+            try:
+                obj = json.loads(blob)
+            except json.JSONDecodeError:
+                obj = None
+            if obj is not None:
+                raw_kind = obj.pop("action", None) or obj.pop("name", None) or "error"
+                kind = _UI_TARS_TO_NALU.get(str(raw_kind).lower(), str(raw_kind).lower())
+                if "coordinate" in obj and isinstance(obj["coordinate"], list) and len(obj["coordinate"]) >= 2:
+                    obj["x"], obj["y"] = obj["coordinate"][0], obj["coordinate"][1]
+                obj.pop("coordinate", None)
+                obj.pop("name", None)
+                r = obj.pop("reason", "") or reason
+                return cls(kind=kind, args=obj, reason=r)
+
+        # Format 3: regex-only fallback for badly-formed model output.
+        action_field = re.search(r"\"action\"\s*:\s*\"([^\"]+)\"", candidate)
+        coord_field = re.search(r"\"coordinate\"\s*:\s*\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]", candidate)
+        if action_field:
+            kind = _UI_TARS_TO_NALU.get(action_field.group(1).lower(), action_field.group(1).lower())
+            args: dict[str, Any] = {}
+            if coord_field:
+                args["x"] = int(coord_field.group(1))
+                args["y"] = int(coord_field.group(2))
+            return cls(kind=kind, args=args, reason=reason or "fallback-regex")
+
+        return cls(kind="error", reason=f"unparseable model output: {text[:300]}")
 
 
 class VisionAgent:

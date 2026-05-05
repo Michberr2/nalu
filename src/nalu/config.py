@@ -15,7 +15,9 @@ LOG_DIR = ROOT / "logs"
 
 VISION_MODEL = os.environ.get("NALU_VISION_MODEL", "mlx-community/UI-TARS-1.5-7B-4bit")
 TTS_VOICE = os.environ.get("NALU_TTS_VOICE", "en_GB-alan-medium")
+TTS_LENGTH_SCALE = float(os.environ.get("NALU_TTS_LENGTH_SCALE", "0.85"))
 STT_MODEL = os.environ.get("NALU_STT_MODEL", "base.en")
+CAPTURE_FPS = float(os.environ.get("NALU_CAPTURE_FPS", "2.0"))
 
 PAUSE_HOTKEY = os.environ.get("NALU_PAUSE_HOTKEY", "<ctrl>+<alt>+<cmd>+.")
 PUSH_TO_TALK_HOTKEY = os.environ.get("NALU_PTT_HOTKEY", "<ctrl>+<alt>+<cmd>+space")

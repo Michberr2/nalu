@@ -16,6 +16,7 @@ from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.vision import VisionAgent
 from .bus import BusClient, BusServer
+from .capture import ContinuousCapture
 
 app = typer.Typer(help="Nalu — local vision agent.", no_args_is_help=True)
 console = Console()
@@ -67,9 +68,12 @@ async def _run_one_shot(goal: str) -> None:
     actuator = Actuator(pause)
     vision = VisionAgent()
 
+    capture = ContinuousCapture()
+    capture.start()
+
     client = BusClient(source="planner")
     await client.connect()
-    planner = Planner(client, actuator, vision, pause)
+    planner = Planner(client, actuator, vision, pause, capture=capture)
     await planner.run()
 
     pub = BusClient(source="cli")
@@ -99,6 +103,7 @@ async def _run_one_shot(goal: str) -> None:
     except asyncio.TimeoutError:
         console.print("[red]CLI timed out waiting for completion.[/red]")
     finally:
+        capture.stop()
         pause.stop()
         bus_server.close()
         await bus_server.wait_closed()
