@@ -242,6 +242,101 @@ with tab_train:
             use_container_width=True,
         )
 
+    st.subheader("Evals")
+    from ..agents.trainer import compare_evals, list_evals
+
+    evals = list_evals()
+    if not evals:
+        st.info(
+            "No evals yet. Run `nalu train eval <dataset>` (deactivate the adapter first "
+            "to capture a baseline, activate to capture the candidate)."
+        )
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "eval": e["name"],
+                        "adapter": Path(e["adapter"]).name if e.get("adapter") else "(base)",
+                        "kind acc": f"{e.get('action_kind_accuracy', 0):.0%}",
+                        "click hit@64": f"{e.get('click_hit_rate_64px', 0):.0%}",
+                        "click MAE": f"{e.get('click_mae_px', 0):.1f}",
+                        "text acc": f"{e.get('text_accuracy', 0):.0%}",
+                        "n": e.get("total", 0),
+                    }
+                    for e in evals
+                ]
+            ),
+            use_container_width=True,
+        )
+
+        if len(evals) >= 2:
+            st.markdown("**Compare two evals**")
+            cc1, cc2 = st.columns(2)
+            base_label = cc1.selectbox(
+                "Baseline",
+                [e["name"] for e in evals],
+                index=len(evals) - 1,
+                key="cmp_base",
+            )
+            cand_label = cc2.selectbox(
+                "Candidate",
+                [e["name"] for e in evals],
+                index=0,
+                key="cmp_cand",
+            )
+            if base_label != cand_label:
+                cmp = compare_evals(
+                    Path(next(e["path"] for e in evals if e["name"] == base_label)),
+                    Path(next(e["path"] for e in evals if e["name"] == cand_label)),
+                )
+                if cmp["shared_examples"] == 0:
+                    st.warning("These evals share no (run, step) pairs — different datasets?")
+                else:
+                    st.caption(
+                        f"Shared examples: {cmp['shared_examples']}  •  "
+                        f"baseline adapter: {Path(cmp['baseline']['adapter']).name if cmp['baseline']['adapter'] else '(base)'}"
+                        f"  →  candidate: {Path(cmp['candidate']['adapter']).name if cmp['candidate']['adapter'] else '(base)'}"
+                    )
+                    m1, m2, m3, m4 = st.columns(4)
+                    kind = cmp["metrics"]["action_kind_accuracy"]
+                    mae = cmp["metrics"]["click_mae_px"]
+                    hit = cmp["metrics"]["click_hit_rate_64px"]
+                    txt = cmp["metrics"]["text_accuracy"]
+                    m1.metric(
+                        "Kind accuracy",
+                        f"{kind['candidate']:.0%}" if kind['candidate'] is not None else "—",
+                        delta=f"{kind['delta']:+.1%}" if kind['delta'] is not None else None,
+                    )
+                    m2.metric(
+                        "Click hit@64",
+                        f"{hit['candidate']:.0%}" if hit['candidate'] is not None else "—",
+                        delta=f"{hit['delta']:+.1%}" if hit['delta'] is not None else None,
+                    )
+                    m3.metric(
+                        "Click MAE",
+                        f"{mae['candidate']:.1f}px" if mae['candidate'] is not None else "—",
+                        delta=f"{mae['delta']:+.1f}px" if mae['delta'] is not None else None,
+                        delta_color="inverse",
+                    )
+                    m4.metric(
+                        "Text accuracy",
+                        f"{txt['candidate']:.0%}" if txt['candidate'] is not None else "—",
+                        delta=f"{txt['delta']:+.1%}" if txt['delta'] is not None else None,
+                    )
+                    t1, t2, t3, t4 = st.columns(4)
+                    t1.metric("Both correct", cmp["tally"]["both_correct"])
+                    t2.metric("Both wrong", cmp["tally"]["both_wrong"])
+                    t3.metric("→ correct (gain)", cmp["tally"]["flipped_to_correct"])
+                    t4.metric("→ wrong (regression)", cmp["tally"]["flipped_to_wrong"])
+
+                    if cmp["per_action"]:
+                        st.markdown("**Per-action breakdown**")
+                        st.dataframe(
+                            pd.DataFrame(cmp["per_action"]),
+                            use_container_width=True,
+                        )
+
     st.subheader("Training runs")
     from ..agents.trainer import list_runs
 

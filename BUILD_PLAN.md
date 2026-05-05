@@ -3,7 +3,7 @@
 Single source of truth for what's built, what's in flight, and what's next.
 Update this file whenever a phase item ships.
 
-Last updated: 2026-05-05 (train/eval split shipped)
+Last updated: 2026-05-05 (Phase 2 complete)
 
 ---
 
@@ -40,14 +40,14 @@ No cloud APIs. No per-request cost. Apache 2.0.
 - [x] **Live tab** — tails the events log with optional 2 s auto-refresh.
 - [x] **Dataset collection** — `nalu train collect` walks runs and emits a JSONL dataset of (screenshot, goal, action) triples.
 
-## Phase 2 — Training pipeline 🚧 in progress
+## Phase 2 — Training pipeline ✅ shipped
 
 - [x] **QLoRA fine-tune runner** — `nalu train run <dataset>` consumes JSONL, calls `mlx_vlm.lora`, writes `adapters.safetensors` + `adapter_config.json` per run, streams metrics to `metrics.jsonl`.
 - [x] **Adapter activation** — `nalu train activate <run>` writes a pointer file; `VisionAgent.load` applies it via `apply_lora_layers` on next daemon start. `nalu train deactivate` reverts to base.
 - [x] **Eval harness** — `nalu train eval <dataset>` runs the active model over the dataset and reports action-kind accuracy, click hit-rate @ 64 px, click MAE, text accuracy. Run with adapter on/off to compare.
 - [x] **Adapter hot-swap mid-daemon** — `nalu train activate` publishes `vision_swap_adapter`; daemon reloads base + applies new LoRA in a thread, gated by a `VisionAgent` lock so swaps and asks queue safely. Dashboard buttons swap without restart.
 - [x] **Train/eval split** — `nalu train collect --eval-ratio 0.2` deterministically partitions *runs* (not examples) into `train.jsonl` + `eval.jsonl` so frames from the same task can't leak across the boundary. Dashboard slider exposes the same.
-- [ ] **Eval comparison view** — dashboard panel showing base vs adapter side-by-side from `training/evals/`.
+- [x] **Eval comparison view** — dashboard panel joins two `results.jsonl` files by `(run, step)` and reports metric deltas, gain/regression tally, and per-action flip breakdown. Lets you confirm a fine-tune is helping where you expected, not just on average.
 
 ## Phase 3 — Weight merging & multi-model 📋 planned
 
@@ -66,9 +66,9 @@ No cloud APIs. No per-request cost. Apache 2.0.
 
 ## Working set today
 
-**You are here:** end of Phase 2, five items complete (runner / activation / eval / hot-swap / split), one item remaining.
+**You are here:** Phase 2 complete. Full closed loop: collect → split → train → eval → activate → hot-swap → compare. Ship-able.
 
-Next pull: dashboard eval-comparison panel — the last Phase 2 item. After that, Phase 3 begins with the history-aware planner (cheapest win — already have the bus payload, just need to forward it into the prompt) before tackling mergekit.
+Next pull: kick off Phase 3. The history-aware planner is the cheapest win — already have the bus payload, just need to forward conversation history into the vision prompt instead of `(no prior steps)`. Mergekit and the model registry follow that.
 
 ## Where things live on disk
 

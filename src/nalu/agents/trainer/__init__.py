@@ -1,5 +1,5 @@
 from .dataset import DatasetSummary, collect, list_datasets
-from .eval import EvalSummary, evaluate, list_evals
+from .eval import EvalSummary, compare_evals, evaluate, list_evals
 from .runner import (
     QLoRARunner,
     TrainingRunSummary,
@@ -25,4 +25,5 @@ __all__ = [
     "EvalSummary",
     "evaluate",
     "list_evals",
+    "compare_evals",
 ]

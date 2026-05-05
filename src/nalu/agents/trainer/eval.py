@@ -185,6 +185,116 @@ def evaluate(
     )
 
 
+def _load_results(path: Path) -> dict[tuple[str, int], dict]:
+    """Index a results.jsonl by (run, step) for joining."""
+    out: dict[tuple[str, int], dict] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        out[(rec.get("run") or "", int(rec.get("step", 0)))] = rec
+    return out
+
+
+def compare_evals(baseline_dir: Path, candidate_dir: Path) -> dict:
+    """Join two eval runs by (run, step) and report metric deltas + per-action breakdown.
+
+    Returns a dict with:
+      - `metrics`: dict of {metric_name: {"baseline": v, "candidate": v, "delta": v}}
+      - `per_action`: list of {action, total, baseline_correct, candidate_correct,
+        flipped_to_correct, flipped_to_wrong}
+      - `examples`: list of joined per-example records (subset of fields)
+    """
+    baseline_dir = Path(baseline_dir)
+    candidate_dir = Path(candidate_dir)
+    bsum = json.loads((baseline_dir / "summary.json").read_text())
+    csum = json.loads((candidate_dir / "summary.json").read_text())
+    bres = _load_results(baseline_dir / "results.jsonl")
+    cres = _load_results(candidate_dir / "results.jsonl")
+
+    metrics = {}
+    for k in (
+        "action_kind_accuracy",
+        "click_hit_rate_64px",
+        "click_mae_px",
+        "text_accuracy",
+        "elapsed_s",
+    ):
+        bv = bsum.get(k)
+        cv = csum.get(k)
+        delta = (cv - bv) if (isinstance(bv, (int, float)) and isinstance(cv, (int, float))) else None
+        metrics[k] = {"baseline": bv, "candidate": cv, "delta": delta}
+
+    shared = sorted(bres.keys() & cres.keys())
+    per_action_acc: dict[str, dict[str, int]] = {}
+    examples = []
+    flipped_correct = 0
+    flipped_wrong = 0
+    both_correct = 0
+    both_wrong = 0
+
+    for key in shared:
+        b = bres[key]
+        c = cres[key]
+        truth = b.get("truth_kind") or c.get("truth_kind") or "?"
+        slot = per_action_acc.setdefault(
+            truth,
+            {"total": 0, "baseline_correct": 0, "candidate_correct": 0,
+             "flipped_to_correct": 0, "flipped_to_wrong": 0},
+        )
+        slot["total"] += 1
+        b_ok = bool(b.get("kind_correct"))
+        c_ok = bool(c.get("kind_correct"))
+        if b_ok:
+            slot["baseline_correct"] += 1
+        if c_ok:
+            slot["candidate_correct"] += 1
+        if b_ok and not c_ok:
+            slot["flipped_to_wrong"] += 1
+            flipped_wrong += 1
+        elif not b_ok and c_ok:
+            slot["flipped_to_correct"] += 1
+            flipped_correct += 1
+        elif b_ok and c_ok:
+            both_correct += 1
+        else:
+            both_wrong += 1
+
+        examples.append(
+            {
+                "run": key[0],
+                "step": key[1],
+                "truth": truth,
+                "baseline_pred": b.get("pred_kind"),
+                "candidate_pred": c.get("pred_kind"),
+                "baseline_correct": b_ok,
+                "candidate_correct": c_ok,
+                "baseline_dist": b.get("click_distance_px"),
+                "candidate_dist": c.get("click_distance_px"),
+            }
+        )
+
+    return {
+        "baseline": {"name": baseline_dir.name, "adapter": bsum.get("adapter")},
+        "candidate": {"name": candidate_dir.name, "adapter": csum.get("adapter")},
+        "shared_examples": len(shared),
+        "metrics": metrics,
+        "per_action": [
+            {"action": k, **v} for k, v in sorted(per_action_acc.items())
+        ],
+        "tally": {
+            "both_correct": both_correct,
+            "both_wrong": both_wrong,
+            "flipped_to_correct": flipped_correct,
+            "flipped_to_wrong": flipped_wrong,
+        },
+        "examples": examples,
+    }
+
+
 def list_evals(root: Path | None = None) -> list[dict]:
     root = root or (config.ROOT / "training" / "evals")
     if not root.exists():

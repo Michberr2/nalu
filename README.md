@@ -6,7 +6,7 @@ Nalu is a standalone AI assistant that runs entirely on your Mac. It captures th
 
 ## Status
 
-End of Phase 2. Full closed-loop training pipeline works: collect a dataset from real sessions, fine-tune a LoRA adapter, evaluate on held-out runs, and activate it for the next daemon start. See [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the full roadmap.
+Phase 2 shipped. Full closed-loop training pipeline: collect a dataset from real sessions with a leak-free run-level train/eval split, fine-tune a LoRA adapter, evaluate base vs adapter and compare side-by-side, then hot-swap the running daemon to the new adapter without restart. See [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the full roadmap.
 
 ## Requirements
 
