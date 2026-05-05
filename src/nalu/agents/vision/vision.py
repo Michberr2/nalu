@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -122,7 +123,26 @@ class Action:
                 args["dy"] = -120 if d == "up" else 120 if d == "down" else 0
             return cls(kind=kind, args=args, reason=reason or fn)
 
-        # Format 2: bare JSON {"action": "...", ...}, possibly truncated.
+        # Format 2a: <verb> {<dict>} — e.g. `click {'x': 10, 'y': 10}`.
+        verb_dict = re.match(r"\s*(\w+)\s*(\{.*\})\s*$", candidate, re.DOTALL)
+        if verb_dict:
+            try:
+                d = ast.literal_eval(verb_dict.group(2))
+            except (ValueError, SyntaxError):
+                d = None
+            if isinstance(d, dict):
+                kind = _UI_TARS_TO_NALU.get(verb_dict.group(1).lower(), verb_dict.group(1).lower())
+                args = {k: v for k, v in d.items()}
+                if "coordinate" in args and isinstance(args["coordinate"], (list, tuple)) and len(args["coordinate"]) >= 2:
+                    args["x"], args["y"] = args["coordinate"][0], args["coordinate"][1]
+                    args.pop("coordinate", None)
+                if "content" in args and kind == "done":
+                    args["answer"] = args["content"]
+                if "content" in args and kind == "type":
+                    args["text"] = args.pop("content")
+                return cls(kind=kind, args=args, reason=reason or verb_dict.group(1))
+
+        # Format 2b: bare JSON {"action": "...", ...}, possibly truncated.
         jm = re.search(r"\{[^{}]*\}?", candidate, re.DOTALL)
         if jm:
             blob = jm.group(0)
@@ -131,11 +151,14 @@ class Action:
             try:
                 obj = json.loads(blob)
             except json.JSONDecodeError:
-                obj = None
-            if obj is not None:
+                try:
+                    obj = ast.literal_eval(blob)
+                except (ValueError, SyntaxError):
+                    obj = None
+            if isinstance(obj, dict):
                 raw_kind = obj.pop("action", None) or obj.pop("name", None) or "error"
                 kind = _UI_TARS_TO_NALU.get(str(raw_kind).lower(), str(raw_kind).lower())
-                if "coordinate" in obj and isinstance(obj["coordinate"], list) and len(obj["coordinate"]) >= 2:
+                if "coordinate" in obj and isinstance(obj["coordinate"], (list, tuple)) and len(obj["coordinate"]) >= 2:
                     obj["x"], obj["y"] = obj["coordinate"][0], obj["coordinate"][1]
                 obj.pop("coordinate", None)
                 obj.pop("name", None)
@@ -201,7 +224,7 @@ class VisionAgent:
             self._processor,
             formatted,
             [image],
-            max_tokens=256,
+            max_tokens=1024,
             temperature=0.0,
             verbose=False,
         )

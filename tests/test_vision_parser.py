@@ -87,6 +87,20 @@ def test_press_keys_variant_is_normalized():
     assert a.args["name"] == "space"
 
 
+def test_python_dict_form_click():
+    a = Action.parse("Action: click {'x': 10, 'y': 10}")
+    assert a.kind == "click"
+    assert a.args["x"] == 10
+    assert a.args["y"] == 10
+
+
+def test_python_dict_form_with_coordinate_key():
+    a = Action.parse("Action: click {'coordinate': [42, 84]}")
+    assert a.kind == "click"
+    assert a.args["x"] == 42
+    assert a.args["y"] == 84
+
+
 def test_unparseable_returns_error():
     a = Action.parse("here is some prose with no structure at all")
     assert a.kind == "error"

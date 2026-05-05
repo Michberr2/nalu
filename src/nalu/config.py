@@ -11,6 +11,7 @@ RUNS_DIR = ROOT / "runs"
 MODELS_DIR = ROOT / "models"
 RUN_DIR = ROOT / "run"
 BUS_SOCKET = RUN_DIR / "bus.sock"
+DAEMON_PID = RUN_DIR / "daemon.pid"
 LOG_DIR = ROOT / "logs"
 
 VISION_MODEL = os.environ.get("NALU_VISION_MODEL", "mlx-community/UI-TARS-1.5-7B-4bit")

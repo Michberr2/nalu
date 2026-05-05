@@ -73,6 +73,11 @@ class Planner:
                     await self.bus.publish("task_completed", {"answer": action.args.get("answer", ""), "steps": step + 1})
                     break
 
+                if action.kind == "error":
+                    log.warning("parse_error", reason=action.reason)
+                    await self.bus.publish("task_failed", {"reason": action.reason, "step": step})
+                    break
+
                 try:
                     self._dispatch(action, shot)
                 except ActionRefused as e:

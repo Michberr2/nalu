@@ -11,7 +11,7 @@ import structlog
 import typer
 from rich.console import Console
 
-from . import config
+from . import config, daemon
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.vision import VisionAgent
@@ -54,8 +54,75 @@ def doctor() -> None:
 
 @app.command()
 def ask(text: str) -> None:
-    """One-shot: capture screen, ask the model, dispatch actions until done."""
-    asyncio.run(_run_one_shot(text))
+    """Send a task to the running daemon, or run one-shot in-process if no daemon."""
+    if daemon.is_running():
+        asyncio.run(_ask_daemon(text))
+    else:
+        console.print("[yellow]No daemon running — starting in-process (model will reload).[/yellow]")
+        console.print("[dim]Tip: run `nalu serve` in another terminal to keep the model warm.[/dim]")
+        asyncio.run(_run_one_shot(text))
+
+
+@app.command()
+def serve() -> None:
+    """Run the persistent Nalu daemon (keeps the vision model loaded)."""
+    asyncio.run(daemon.serve())
+
+
+@app.command()
+def stop() -> None:
+    """Stop the running Nalu daemon."""
+    if daemon.stop():
+        console.print("[green]daemon stop signal sent.[/green]")
+    else:
+        console.print("[yellow]no daemon running.[/yellow]")
+
+
+@app.command()
+def status() -> None:
+    """Show daemon status."""
+    pid = daemon.daemon_pid()
+    if pid is None:
+        console.print("[yellow]daemon: not running[/yellow]")
+    else:
+        console.print(f"[green]daemon: running (pid {pid})[/green]")
+        console.print(f"  bus socket: {config.BUS_SOCKET}")
+
+
+async def _ask_daemon(goal: str) -> None:
+    pub = BusClient(source="cli")
+    await pub.connect()
+
+    done_evt = asyncio.Event()
+    completed = {"ok": False, "answer": ""}
+
+    async def on_terminal(ev):
+        if ev.topic in ("task_completed", "task_failed"):
+            completed["ok"] = ev.topic == "task_completed"
+            completed["answer"] = ev.payload.get("answer", "") or ev.payload.get("reason", "")
+            done_evt.set()
+
+    sub = BusClient(source="cli-listener")
+    await sub.connect()
+    await sub.subscribe("task_completed", on_terminal)
+    await sub.subscribe("task_failed", on_terminal)
+
+    await pub.publish("user_intent", {"text": goal})
+    console.print(f"[cyan]Nalu is working on:[/cyan] {goal}")
+    console.print("Press [bold]⌃⌥⌘.[/bold] to pause/resume.")
+
+    try:
+        await asyncio.wait_for(done_evt.wait(), timeout=config.PLANNER_TASK_TIMEOUT_S + 30)
+    except asyncio.TimeoutError:
+        console.print("[red]CLI timed out waiting for completion.[/red]")
+    finally:
+        await pub.close()
+        await sub.close()
+
+    if completed["ok"]:
+        console.print(f"[green]done:[/green] {completed['answer']}")
+    else:
+        console.print(f"[red]failed:[/red] {completed['answer']}")
 
 
 async def _run_one_shot(goal: str) -> None:
