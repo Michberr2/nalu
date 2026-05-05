@@ -6,7 +6,7 @@ Nalu is a standalone AI assistant that runs entirely on your Mac. It captures th
 
 ## Status
 
-Phase 0 — initial scaffold. The end-to-end loop runs on a stock open-source model (UI-TARS-1.5-7B). Custom merged + fine-tuned weights are a later phase.
+End of Phase 2. Full closed-loop training pipeline works: collect a dataset from real sessions, fine-tune a LoRA adapter, evaluate on held-out runs, and activate it for the next daemon start. See [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the full roadmap.
 
 ## Requirements
 

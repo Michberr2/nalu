@@ -80,6 +80,40 @@ def train_run(
     )
 
 
+@train_app.command("eval")
+def train_eval(
+    dataset: Path = typer.Argument(..., help="Path to dataset.jsonl from `nalu train collect`."),
+    limit: int = typer.Option(25, help="Max examples to evaluate (None for all)."),
+    out: Path = typer.Option(None, help="Override output directory."),
+) -> None:
+    """Run the active VisionAgent over a dataset and report accuracy.
+
+    The active LoRA adapter (if any) is applied automatically — run twice with
+    `nalu train deactivate` / `nalu train activate <run>` between runs to
+    compare base vs fine-tuned.
+    """
+    from .agents.trainer import evaluate
+
+    if not dataset.exists():
+        console.print(f"[red]dataset not found:[/red] {dataset}")
+        raise typer.Exit(1)
+
+    summary = evaluate(dataset_path=dataset, out_dir=out, limit=limit if limit > 0 else None)
+    console.print(f"[green]eval saved:[/green] {summary.out_dir}")
+    if summary.adapter_dir:
+        console.print(f"  adapter: {summary.adapter_dir.name}")
+    else:
+        console.print("  adapter: (base model)")
+    console.print(
+        f"  total={summary.total}  "
+        f"kind_acc={summary.action_correct / summary.total:.0%}  "
+        f"click_hit@64={summary.click_hit_64}/{summary.click_examples}  "
+        f"click_mae={summary.click_mae:.1f}px  "
+        f"text_acc={(summary.text_correct / summary.text_examples) if summary.text_examples else 0:.0%}  "
+        f"elapsed={summary.elapsed_s:.1f}s"
+    )
+
+
 @train_app.command("activate")
 def train_activate(
     run: Path = typer.Argument(..., help="Path to a training run directory containing adapters.safetensors."),
