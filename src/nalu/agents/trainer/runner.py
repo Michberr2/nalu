@@ -16,7 +16,7 @@ from ... import config
 @dataclass
 class TrainingRunSummary:
     out_dir: Path
-    adapter_path: Path
+    adapter_dir: Path
     iters: int
     examples: int
     final_loss: float | None
@@ -169,9 +169,23 @@ class QLoRARunner:
         from mlx_vlm.utils import load
 
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        adapter_path = self.out_dir / "adapter.safetensors"
+        # mlx_vlm.apply_lora_layers expects a directory containing
+        # adapters.safetensors + adapter_config.json — so the run dir IS the adapter.
+        adapter_file = self.out_dir / "adapters.safetensors"
+        adapter_config = self.out_dir / "adapter_config.json"
         metrics_path = self.out_dir / "metrics.jsonl"
         config_path = self.out_dir / "config.json"
+
+        adapter_config.write_text(
+            json.dumps(
+                {
+                    "rank": self.lora_rank,
+                    "alpha": self.lora_alpha,
+                    "dropout": self.lora_dropout,
+                },
+                indent=2,
+            )
+        )
 
         examples = self._load_examples()
         hf_ds = self._build_hf_dataset(examples)
@@ -231,7 +245,7 @@ class QLoRARunner:
             steps_per_save=max(50, iters // 4) if iters >= 4 else iters,
             val_batches=0,
             max_seq_length=self.max_seq_length,
-            adapter_file=str(adapter_path),
+            adapter_file=str(adapter_file),
             grad_checkpoint=self.grad_checkpoint,
             learning_rate=self.learning_rate,
         )
@@ -261,11 +275,52 @@ class QLoRARunner:
 
         return TrainingRunSummary(
             out_dir=self.out_dir,
-            adapter_path=adapter_path,
+            adapter_dir=self.out_dir,
             iters=iters,
             examples=len(hf_ds),
             final_loss=final_loss,
         )
+
+
+def _active_adapter_pointer() -> Path:
+    return config.ROOT / "training" / "active_adapter"
+
+
+def active_adapter_dir() -> Path | None:
+    """Return the directory of the currently-active LoRA adapter, or None.
+
+    The pointer is a tiny text file that holds an absolute path to the run
+    directory, so apply_lora_layers can be called against it.
+    """
+    pointer = _active_adapter_pointer()
+    if not pointer.exists():
+        return None
+    target = Path(pointer.read_text().strip())
+    if not (target / "adapters.safetensors").exists():
+        return None
+    if not (target / "adapter_config.json").exists():
+        return None
+    return target
+
+
+def activate_adapter(run_dir: Path) -> Path:
+    run_dir = Path(run_dir).resolve()
+    if not (run_dir / "adapters.safetensors").exists():
+        raise FileNotFoundError(f"no adapters.safetensors in {run_dir}")
+    if not (run_dir / "adapter_config.json").exists():
+        raise FileNotFoundError(f"no adapter_config.json in {run_dir}")
+    pointer = _active_adapter_pointer()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(str(run_dir))
+    return run_dir
+
+
+def deactivate_adapter() -> bool:
+    pointer = _active_adapter_pointer()
+    if pointer.exists():
+        pointer.unlink()
+        return True
+    return False
 
 
 def list_runs(root: Path | None = None) -> list[dict]:
@@ -276,7 +331,7 @@ def list_runs(root: Path | None = None) -> list[dict]:
     for d in sorted(root.iterdir(), reverse=True):
         cfg = d / "config.json"
         metrics = d / "metrics.jsonl"
-        adapter = d / "adapter.safetensors"
+        adapter = d / "adapters.safetensors"
         entry = {"name": d.name, "path": str(d), "has_adapter": adapter.exists()}
         if cfg.exists():
             try:

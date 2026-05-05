@@ -274,8 +274,49 @@ with tab_train:
                 )
 
 with tab_model:
+    from ..agents.trainer import (
+        activate_adapter as _activate_adapter,
+        active_adapter_dir,
+        deactivate_adapter as _deactivate_adapter,
+        list_runs as _list_runs,
+    )
+
     st.subheader("Active model")
     st.code(config.VISION_MODEL)
+
+    active = active_adapter_dir()
+    st.subheader("Active LoRA adapter")
+    if active is None:
+        st.info("None — running the base model.")
+    else:
+        st.success(f"Active: {active.name}")
+        st.code(str(active))
+        if st.button("Deactivate adapter"):
+            _deactivate_adapter()
+            st.rerun()
+
+    runs = _list_runs()
+    selectable = [r for r in runs if r.get("has_adapter")]
+    if selectable:
+        st.subheader("Activate a fine-tune")
+        choice = st.selectbox(
+            "Run",
+            [r["name"] for r in selectable],
+            format_func=lambda n: next(
+                (
+                    f"{n}  (loss={r.get('last_loss', '—')}, examples={r.get('examples', '—')})"
+                    for r in selectable
+                    if r["name"] == n
+                ),
+                n,
+            ),
+        )
+        if st.button("Activate selected"):
+            target = next(Path(r["path"]) for r in selectable if r["name"] == choice)
+            _activate_adapter(target)
+            st.rerun()
+        if daemon.daemon_pid() is not None:
+            st.caption("Daemon is running — stop & restart to load the adapter into memory.")
     model_dir = config.MODELS_DIR
     if model_dir.exists():
         rows = []

@@ -194,6 +194,7 @@ class VisionAgent:
         self.model_id = model_id
         self._model = None
         self._processor = None
+        self._adapter_dir = None
 
     def load(self) -> None:
         if self._model is not None:
@@ -204,6 +205,18 @@ class VisionAgent:
         cfg = load_config(self.model_id)
         self._model, self._processor = load(self.model_id, processor_config={"trust_remote_code": True})
         self._cfg = cfg
+        self._maybe_apply_active_adapter()
+
+    def _maybe_apply_active_adapter(self) -> None:
+        from ..trainer.runner import active_adapter_dir
+
+        adapter = active_adapter_dir()
+        if adapter is None:
+            return
+        from mlx_vlm.trainer.utils import apply_lora_layers
+
+        self._model = apply_lora_layers(self._model, str(adapter))
+        self._adapter_dir = adapter
 
     def decide(self, image: Image.Image, goal: str, history: list[str] | None = None) -> Action:
         self.load()

@@ -80,6 +80,36 @@ def train_run(
     )
 
 
+@train_app.command("activate")
+def train_activate(
+    run: Path = typer.Argument(..., help="Path to a training run directory containing adapters.safetensors."),
+) -> None:
+    """Mark a fine-tuned adapter as the active one for future daemon starts."""
+    from .agents.trainer import activate_adapter
+
+    try:
+        target = activate_adapter(run)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]active adapter:[/green] {target}")
+    if daemon.is_running():
+        console.print("[yellow]daemon is running — stop & restart to load the new adapter.[/yellow]")
+
+
+@train_app.command("deactivate")
+def train_deactivate() -> None:
+    """Clear the active adapter so the daemon runs the base model."""
+    from .agents.trainer import deactivate_adapter
+
+    if deactivate_adapter():
+        console.print("[green]active adapter cleared.[/green]")
+    else:
+        console.print("[yellow]no active adapter set.[/yellow]")
+    if daemon.is_running():
+        console.print("[yellow]daemon is running — stop & restart to drop the adapter.[/yellow]")
+
+
 @train_app.command("report")
 def train_report() -> None:
     """Show training recommendations and dataset inventory."""
