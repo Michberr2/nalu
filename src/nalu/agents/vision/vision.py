@@ -10,27 +10,33 @@ from PIL import Image
 from ... import config
 
 
-SYSTEM_PROMPT = """You are a GUI agent. You see a screenshot of the user's screen and a task instruction.
-You output the next action to perform on the GUI.
-
-## Action Space
-click(start_box='[x,y]')
-left_double_click(start_box='[x,y]')
-right_single_click(start_box='[x,y]')
-type(content='string to type')
-hotkey(key='cmd+a')
-scroll(start_box='[x,y]', direction='up' or 'down')
-wait()
-finished(content='answer or completion message')
+SYSTEM_PROMPT = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
 
 ## Output Format
-Thought: one sentence about what you will do next and why.
-Action: one function call from the Action Space.
+```
+Thought: ...
+Action: ...
+```
 
-## Notes
-- Coordinates are pixels in the screenshot you are shown.
-- Always emit BOTH a Thought line and an Action line.
-- When the task is informational and no further GUI action is needed, use finished(content='answer').
+## Action Space
+
+click(start_box='<|box_start|>(x1,y1)<|box_end|>')
+left_double_click(start_box='<|box_start|>(x1,y1)<|box_end|>')
+right_single_click(start_box='<|box_start|>(x1,y1)<|box_end|>')
+drag(start_box='<|box_start|>(x1,y1)<|box_end|>', end_box='<|box_start|>(x2,y2)<|box_end|>')
+hotkey(key='')
+type(content='') #If you want to submit your input, use "\\n" at the end of `content`.
+scroll(start_box='<|box_start|>(x1,y1)<|box_end|>', direction='down or up or right or left')
+wait() #Sleep for 5s and take a screenshot to check for any changes.
+finished(content='xxx') # Use escape characters \\', \\", and \\n in content part to ensure we can parse the content in normal python string format.
+
+
+## Note
+- Use English in `Thought` part.
+- Summarize your next action (with its target element) in one sentence in `Thought` part.
+- Coordinates are absolute pixel positions in the screenshot.
+
+## User Instruction
 """
 
 _UI_TARS_TO_NALU = {
@@ -44,6 +50,9 @@ _UI_TARS_TO_NALU = {
     "input": "type",
     "hotkey": "key",
     "key": "key",
+    "press": "key",
+    "press_keys": "key",
+    "keypress": "key",
     "scroll": "scroll",
     "wait": "wait",
     "finished": "done",
@@ -53,7 +62,7 @@ _UI_TARS_TO_NALU = {
 
 
 _BOX_TOKEN_RE = re.compile(r"<\|box_(?:start|end)\|>")
-_FUNC_CALL_RE = re.compile(r"(\w+)\s*\(([^)]*)\)")
+_FUNC_CALL_RE = re.compile(r"(\w+)\s*\((.*)\)\s*$")
 _COORD_RE = re.compile(r"\[?\s*(-?\d+)\s*,\s*(-?\d+)\s*\]?")
 
 
@@ -143,6 +152,14 @@ class Action:
                 args["x"] = int(coord_field.group(1))
                 args["y"] = int(coord_field.group(2))
             return cls(kind=kind, args=args, reason=reason or "fallback-regex")
+
+        # Format 4: natural-language `press "Cmd + Space"` style.
+        press_match = re.search(r"\b(?:press|hotkey|keypress)\b\s*[\"']?([A-Za-z0-9+\s]+?)[\"']?\s*$", candidate, re.IGNORECASE)
+        if press_match:
+            parts = [p.strip().lower().replace("command", "cmd").replace("control", "ctrl").replace("option", "alt") for p in press_match.group(1).split("+")]
+            parts = [p for p in parts if p]
+            if parts:
+                return cls(kind="key", args={"modifiers": parts[:-1], "name": parts[-1]}, reason=reason or "fallback-press")
 
         return cls(kind="error", reason=f"unparseable model output: {text[:300]}")
 
