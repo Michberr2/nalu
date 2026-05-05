@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from .. import config
+from .. import config, daemon
 from ..agents.trainer import TrainerAgent
+from ..bus import BusClient
 
 st.set_page_config(page_title="Nalu", layout="wide")
 
@@ -16,7 +18,82 @@ st.caption("Fully local. Real data only. If a panel is empty, no data exists yet
 
 config.ensure_dirs()
 
-tab_overview, tab_runs, tab_train, tab_model = st.tabs(["Overview", "Runs", "Training", "Model"])
+tab_chat, tab_overview, tab_runs, tab_train, tab_model = st.tabs(
+    ["Chat", "Overview", "Runs", "Training", "Model"]
+)
+
+
+async def _send_intent(text: str, timeout: float) -> tuple[bool, str]:
+    pub = BusClient(source="dashboard")
+    sub = BusClient(source="dashboard-listener")
+    await pub.connect()
+    await sub.connect()
+    done = asyncio.Event()
+    result = {"ok": False, "answer": ""}
+
+    async def on_terminal(ev):
+        if ev.topic in ("task_completed", "task_failed"):
+            result["ok"] = ev.topic == "task_completed"
+            result["answer"] = ev.payload.get("answer", "") or ev.payload.get("reason", "")
+            done.set()
+
+    await sub.subscribe("task_completed", on_terminal)
+    await sub.subscribe("task_failed", on_terminal)
+    await pub.publish("user_intent", {"text": text, "via": "dashboard"})
+    try:
+        await asyncio.wait_for(done.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        result["answer"] = "(timeout waiting for daemon)"
+    finally:
+        await pub.close()
+        await sub.close()
+    return result["ok"], result["answer"]
+
+
+def _recent_conversation(max_items: int = 20) -> list[dict]:
+    runs = sorted([p for p in config.RUNS_DIR.glob("*") if p.is_dir()], reverse=True)
+    out: list[dict] = []
+    for run in runs:
+        ap = run / "actions.jsonl"
+        if not ap.exists():
+            continue
+        records = [json.loads(line) for line in ap.read_text().splitlines() if line.strip()]
+        if not records:
+            continue
+        terminal = next(
+            (r for r in reversed(records) if r["action"] in ("done", "error") or "answer" in r.get("args", {})),
+            records[-1],
+        )
+        steps = len(records)
+        answer = terminal.get("args", {}).get("answer") or terminal.get("reason", "")
+        out.append({"run": run.name, "steps": steps, "answer": answer})
+        if len(out) >= max_items:
+            break
+    return out
+
+
+with tab_chat:
+    pid = daemon.daemon_pid()
+    if pid is None:
+        st.warning("Daemon is not running. Start it with `nalu serve` in a terminal to chat.")
+    else:
+        st.caption(f"Daemon: pid {pid} — model stays loaded between turns.")
+
+    for entry in reversed(_recent_conversation()):
+        with st.chat_message("user"):
+            st.write(f"_(run {entry['run']} — {entry['steps']} step{'s' if entry['steps'] != 1 else ''})_")
+        with st.chat_message("assistant"):
+            st.write(entry["answer"] or "(no terminal answer)")
+
+    prompt = st.chat_input("Tell Nalu what to do…", disabled=pid is None)
+    if prompt:
+        with st.chat_message("user"):
+            st.write(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Nalu is working…"):
+                ok, answer = asyncio.run(_send_intent(prompt, config.PLANNER_TASK_TIMEOUT_S))
+            st.write(answer if answer else ("done" if ok else "failed"))
+        st.rerun()
 
 with tab_overview:
     trainer = TrainerAgent()

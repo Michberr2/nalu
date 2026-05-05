@@ -4,6 +4,8 @@ import asyncio
 import os
 import signal
 import sys
+import threading
+from collections import deque
 
 import structlog
 
@@ -11,7 +13,7 @@ from . import config
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.vision import VisionAgent
-from .agents.voice import PushToTalk
+from .agents.voice import PushToTalk, TTS
 from .bus import BusClient, BusServer
 from .capture import ContinuousCapture
 
@@ -114,6 +116,41 @@ async def serve() -> None:
         await asyncio.to_thread(ptt.warm)
         log.info("stt_model_loaded")
         ptt.start()
+
+        tts = TTS()
+        log.info("loading_tts_voice", voice=config.TTS_VOICE)
+        await asyncio.to_thread(tts.load)
+        log.info("tts_voice_loaded")
+
+        history: deque[dict] = deque(maxlen=20)
+
+        def _speak_async(text: str) -> None:
+            if not text:
+                return
+            threading.Thread(target=lambda: tts.speak(text), daemon=True).start()
+
+        chat_bus = BusClient(source="daemon")
+        await chat_bus.connect()
+
+        async def _on_intent(ev) -> None:
+            history.append({"role": "user", "text": ev.payload.get("text", ""), "ts": ev.ts})
+
+        async def _on_completed(ev) -> None:
+            answer = ev.payload.get("answer", "") or ""
+            history.append({"role": "assistant", "text": answer, "ts": ev.ts})
+            _speak_async(answer)
+
+        async def _on_failed(ev) -> None:
+            reason = ev.payload.get("reason", "") or ""
+            history.append({"role": "assistant", "text": f"failed: {reason}", "ts": ev.ts})
+
+        async def _on_history_request(ev) -> None:
+            await chat_bus.publish("conversation_history", {"history": list(history)})
+
+        await chat_bus.subscribe("user_intent", _on_intent)
+        await chat_bus.subscribe("task_completed", _on_completed)
+        await chat_bus.subscribe("task_failed", _on_failed)
+        await chat_bus.subscribe("history_request", _on_history_request)
 
         stop_evt = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
