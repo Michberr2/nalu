@@ -169,10 +169,26 @@ async def serve() -> None:
         async def _on_history_request(ev) -> None:
             await chat_bus.publish("conversation_history", {"history": list(history)})
 
+        async def _on_swap_adapter(ev) -> None:
+            target = ev.payload.get("path")
+            target_path = None if target in (None, "", False) else target
+            log.info("vision_swap_starting", target=target_path)
+            try:
+                applied = await asyncio.to_thread(vision.swap_adapter, target_path)
+                log.info("vision_swap_completed", adapter=str(applied) if applied else None)
+                await chat_bus.publish(
+                    "vision_swap_completed",
+                    {"adapter": str(applied) if applied else None},
+                )
+            except Exception as e:
+                log.exception("vision_swap_failed")
+                await chat_bus.publish("vision_swap_failed", {"reason": str(e)})
+
         await chat_bus.subscribe("user_intent", _on_intent)
         await chat_bus.subscribe("task_completed", _on_completed)
         await chat_bus.subscribe("task_failed", _on_failed)
         await chat_bus.subscribe("history_request", _on_history_request)
+        await chat_bus.subscribe("vision_swap_adapter", _on_swap_adapter)
 
         stop_evt = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):

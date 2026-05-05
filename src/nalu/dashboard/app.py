@@ -284,6 +284,20 @@ with tab_model:
     st.subheader("Active model")
     st.code(config.VISION_MODEL)
 
+    from ..hotswap import hot_swap
+
+    daemon_up = daemon.daemon_pid() is not None
+
+    def _swap_running_daemon(path: str | None) -> None:
+        if not daemon_up:
+            return
+        with st.spinner("hot-swapping daemon model…"):
+            ok, msg = asyncio.run(hot_swap(path))
+        if ok:
+            st.toast(f"daemon now: {msg}")
+        else:
+            st.error(f"hot-swap failed: {msg}")
+
     active = active_adapter_dir()
     st.subheader("Active LoRA adapter")
     if active is None:
@@ -293,6 +307,7 @@ with tab_model:
         st.code(str(active))
         if st.button("Deactivate adapter"):
             _deactivate_adapter()
+            _swap_running_daemon(None)
             st.rerun()
 
     runs = _list_runs()
@@ -314,9 +329,10 @@ with tab_model:
         if st.button("Activate selected"):
             target = next(Path(r["path"]) for r in selectable if r["name"] == choice)
             _activate_adapter(target)
+            _swap_running_daemon(str(target))
             st.rerun()
-        if daemon.daemon_pid() is not None:
-            st.caption("Daemon is running — stop & restart to load the adapter into memory.")
+        if not daemon_up:
+            st.caption("Daemon not running — adapter will load on the next `nalu serve`.")
     model_dir = config.MODELS_DIR
     if model_dir.exists():
         rows = []

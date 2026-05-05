@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
+import gc
 import json
 import re
+import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
@@ -61,6 +64,8 @@ _UI_TARS_TO_NALU = {
     "call_user": "done",
 }
 
+
+_SENTINEL = object()
 
 _BOX_TOKEN_RE = re.compile(r"<\|box_(?:start|end)\|>")
 _FUNC_CALL_RE = re.compile(r"(\w+)\s*\((.*)\)\s*$")
@@ -194,29 +199,65 @@ class VisionAgent:
         self.model_id = model_id
         self._model = None
         self._processor = None
-        self._adapter_dir = None
+        self._cfg = None
+        self._adapter_dir: Path | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def adapter_dir(self) -> Path | None:
+        return self._adapter_dir
 
     def load(self) -> None:
-        if self._model is not None:
-            return
+        with self._lock:
+            if self._model is not None:
+                return
+            self._load_locked(adapter_override=_SENTINEL)
+
+    def swap_adapter(self, target: Path | None | object = None) -> Path | None:
+        """Reload the base model and apply `target` (or the active pointer if omitted).
+
+        Pass `None` explicitly to drop any adapter and run the base model.
+        Acquires the same lock as `decide()`, so concurrent calls queue.
+        """
+        with self._lock:
+            self._load_locked(adapter_override=target)
+            return self._adapter_dir
+
+    def _load_locked(self, adapter_override: Path | None | object) -> None:
         from mlx_vlm import load
         from mlx_vlm.utils import load_config
 
+        if self._model is not None:
+            self._model = None
+            self._processor = None
+            self._cfg = None
+            self._adapter_dir = None
+            gc.collect()
+
         cfg = load_config(self.model_id)
-        self._model, self._processor = load(self.model_id, processor_config={"trust_remote_code": True})
+        model, processor = load(
+            self.model_id, processor_config={"trust_remote_code": True}
+        )
         self._cfg = cfg
-        self._maybe_apply_active_adapter()
+        self._processor = processor
+        self._model = model
 
-    def _maybe_apply_active_adapter(self) -> None:
-        from ..trainer.runner import active_adapter_dir
+        if adapter_override is _SENTINEL:
+            from ..trainer.runner import active_adapter_dir
 
-        adapter = active_adapter_dir()
-        if adapter is None:
-            return
-        from mlx_vlm.trainer.utils import apply_lora_layers
+            adapter = active_adapter_dir()
+        elif adapter_override is None:
+            adapter = None
+        else:
+            adapter = Path(adapter_override)
+            if not (adapter / "adapters.safetensors").exists():
+                adapter = None
 
-        self._model = apply_lora_layers(self._model, str(adapter))
-        self._adapter_dir = adapter
+        if adapter is not None:
+            from mlx_vlm.trainer.utils import apply_lora_layers
+
+            self._model = apply_lora_layers(self._model, str(adapter))
+            self._adapter_dir = adapter
 
     def decide(self, image: Image.Image, goal: str, history: list[str] | None = None) -> Action:
         self.load()
@@ -229,17 +270,18 @@ class VisionAgent:
             f"## Action History\n{history_str}\n\n"
             f"What is your next Thought and Action?"
         )
-        formatted = apply_chat_template(
-            self._processor, self._cfg, user, num_images=1, system_prompt=SYSTEM_PROMPT
-        )
-        out = generate(
-            self._model,
-            self._processor,
-            formatted,
-            [image],
-            max_tokens=1024,
-            temperature=0.0,
-            verbose=False,
-        )
+        with self._lock:
+            formatted = apply_chat_template(
+                self._processor, self._cfg, user, num_images=1, system_prompt=SYSTEM_PROMPT
+            )
+            out = generate(
+                self._model,
+                self._processor,
+                formatted,
+                [image],
+                max_tokens=1024,
+                temperature=0.0,
+                verbose=False,
+            )
         text = out.text if hasattr(out, "text") else str(out)
         return Action.parse(text)

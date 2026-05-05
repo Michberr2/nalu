@@ -117,8 +117,9 @@ def train_eval(
 @train_app.command("activate")
 def train_activate(
     run: Path = typer.Argument(..., help="Path to a training run directory containing adapters.safetensors."),
+    no_hot: bool = typer.Option(False, "--no-hot", help="Skip hot-swap; only update the pointer."),
 ) -> None:
-    """Mark a fine-tuned adapter as the active one for future daemon starts."""
+    """Mark a fine-tuned adapter as the active one (and hot-swap a running daemon)."""
     from .agents.trainer import activate_adapter
 
     try:
@@ -127,21 +128,39 @@ def train_activate(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]active adapter:[/green] {target}")
-    if daemon.is_running():
-        console.print("[yellow]daemon is running — stop & restart to load the new adapter.[/yellow]")
+
+    if daemon.is_running() and not no_hot:
+        from .hotswap import hot_swap
+
+        with console.status("hot-swapping daemon model…"):
+            ok, msg = asyncio.run(hot_swap(str(target)))
+        if ok:
+            console.print(f"[green]daemon swapped to:[/green] {msg}")
+        else:
+            console.print(f"[red]hot-swap failed:[/red] {msg}")
 
 
 @train_app.command("deactivate")
-def train_deactivate() -> None:
-    """Clear the active adapter so the daemon runs the base model."""
+def train_deactivate(
+    no_hot: bool = typer.Option(False, "--no-hot", help="Skip hot-swap; only clear the pointer."),
+) -> None:
+    """Clear the active adapter (and hot-swap a running daemon back to base)."""
     from .agents.trainer import deactivate_adapter
 
     if deactivate_adapter():
         console.print("[green]active adapter cleared.[/green]")
     else:
         console.print("[yellow]no active adapter set.[/yellow]")
-    if daemon.is_running():
-        console.print("[yellow]daemon is running — stop & restart to drop the adapter.[/yellow]")
+
+    if daemon.is_running() and not no_hot:
+        from .hotswap import hot_swap
+
+        with console.status("hot-swapping daemon back to base model…"):
+            ok, msg = asyncio.run(hot_swap(None))
+        if ok:
+            console.print(f"[green]daemon now running:[/green] {msg}")
+        else:
+            console.print(f"[red]hot-swap failed:[/red] {msg}")
 
 
 @train_app.command("report")
