@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
-import subprocess
 import sys
 from pathlib import Path
 
@@ -26,6 +24,8 @@ log = structlog.get_logger("cli")
 @app.command()
 def doctor() -> None:
     """Check environment, deps, and macOS permissions."""
+    from . import permissions
+
     console.print("[bold]Nalu environment check[/bold]")
     console.print(f"Python: {sys.version.split()[0]}")
     console.print(f"NALU_HOME: {config.ROOT}")
@@ -37,19 +37,47 @@ def doctor() -> None:
     except Exception as e:
         console.print(f"[red]mlx missing: {e}[/red]")
 
-    try:
-        from .capture import capture_main_display
-        s = capture_main_display()
-        console.print(f"[green]screen capture OK[/green] — {s.captured_width}x{s.captured_height}")
-    except Exception as e:
-        console.print(f"[red]screen capture failed: {e}[/red]")
-        console.print("→ open System Settings → Privacy & Security → Screen Recording and grant your terminal/Python.")
+    console.print("\n[bold]macOS permissions[/bold]")
+    failed = []
+    for status in permissions.check_all():
+        if status.granted:
+            console.print(f"  [green]✓[/green] {status.name} — {status.detail}")
+        else:
+            console.print(f"  [red]✗[/red] {status.name} — {status.detail}")
+            failed.append(status)
 
-    try:
-        from pynput import keyboard  # noqa: F401
-        console.print("[green]pynput OK[/green]")
-    except Exception as e:
-        console.print(f"[red]pynput failed: {e}[/red]")
+    if failed:
+        console.print("\n[yellow]Some permissions are missing.[/yellow]")
+        console.print("Run [bold]nalu setup[/bold] to open the right Settings panes.")
+
+
+@app.command()
+def setup() -> None:
+    """First-run helper: open System Settings panes for any missing permissions."""
+    from . import permissions
+
+    console.print("[bold]Nalu setup — granting macOS permissions[/bold]\n")
+    statuses = permissions.check_all()
+    needed = [s for s in statuses if not s.granted]
+
+    if not needed:
+        console.print("[green]All permissions are already granted. You're ready to run `nalu serve`.[/green]")
+        return
+
+    for s in needed:
+        console.print(f"[red]✗[/red] {s.name} — {s.detail}")
+        console.print(f"  Opening Settings → {s.name}…")
+        permissions.open_settings(s.fix_url)
+        typer.prompt(
+            f"  After enabling Nalu / your terminal under {s.name}, press Enter to re-check",
+            default="",
+            show_default=False,
+        )
+
+    console.print("\n[bold]Re-checking…[/bold]")
+    for s in permissions.check_all():
+        marker = "[green]✓[/green]" if s.granted else "[red]✗[/red]"
+        console.print(f"  {marker} {s.name} — {s.detail}")
 
 
 @app.command()

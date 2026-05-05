@@ -68,6 +68,16 @@ async def serve() -> None:
         print(f"daemon already running (pid {daemon_pid()})", file=sys.stderr)
         sys.exit(1)
 
+    from . import permissions as perms
+
+    blockers = [s for s in perms.check_all() if not s.granted and s.name in ("Screen Recording", "Accessibility")]
+    if blockers:
+        print("Nalu cannot start — required permissions are missing:", file=sys.stderr)
+        for s in blockers:
+            print(f"  ✗ {s.name}: {s.detail}", file=sys.stderr)
+        print("\nRun `nalu setup` to grant them, then try again.", file=sys.stderr)
+        sys.exit(2)
+
     config.DAEMON_PID.write_text(str(os.getpid()))
     log.info("daemon_starting", pid=os.getpid())
 
