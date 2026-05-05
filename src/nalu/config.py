@@ -21,7 +21,8 @@ STT_MODEL = os.environ.get("NALU_STT_MODEL", "base.en")
 CAPTURE_FPS = float(os.environ.get("NALU_CAPTURE_FPS", "2.0"))
 
 PAUSE_HOTKEY = os.environ.get("NALU_PAUSE_HOTKEY", "<ctrl>+<alt>+<cmd>+.")
-PUSH_TO_TALK_HOTKEY = os.environ.get("NALU_PTT_HOTKEY", "<ctrl>+<alt>+<cmd>+space")
+PUSH_TO_TALK_HOTKEY = os.environ.get("NALU_PTT_HOTKEY", "<ctrl>+<alt>+<cmd>+<space>")
+PTT_RECORD_SECONDS = float(os.environ.get("NALU_PTT_SECONDS", "6.0"))
 
 CAPTURE_MAX_WIDTH = 1280
 CAPTURE_JPEG_QUALITY = 70
