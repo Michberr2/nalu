@@ -123,6 +123,33 @@ with tab_live:
         st.rerun()
 
 
+def _speak_async(text: str) -> None:
+    """Fire-and-forget Piper TTS so the dashboard doesn't block on audio playback."""
+    import threading
+
+    if not text:
+        return
+
+    def _run() -> None:
+        try:
+            from ..agents.voice import TTS
+
+            TTS().speak(text)
+        except Exception:
+            pass  # voice is optional — never block chat on a TTS failure
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _record_and_transcribe(seconds: float) -> str:
+    """Synchronously record `seconds` of mic input and return the transcript."""
+    from ..agents.voice import STT
+    from ..agents.voice.stt import record
+
+    samples, sr = record(seconds)
+    return STT().transcribe_array(samples, sr).strip()
+
+
 with tab_chat:
     pid = daemon.daemon_pid()
     if pid is None:
@@ -136,14 +163,39 @@ with tab_chat:
         with st.chat_message("assistant"):
             st.write(entry["answer"] or "(no terminal answer)")
 
+    speak_back = st.checkbox(
+        "Speak the answer back",
+        value=st.session_state.get("nalu_speak_back", True),
+        key="nalu_speak_back",
+        help="Reads completed-task answers aloud via Piper TTS.",
+    )
+
+    voice_col, record_col = st.columns([3, 1])
+    with record_col:
+        seconds = st.number_input("seconds", min_value=2, max_value=15, value=5, step=1, disabled=pid is None)
+    with voice_col:
+        if st.button("Record voice prompt", disabled=pid is None, use_container_width=True):
+            with st.status(f"Listening for {seconds}s…", expanded=False) as status:
+                transcript = _record_and_transcribe(float(seconds))
+                status.update(label=f"Heard: {transcript or '(silence)'}", state="complete")
+            if transcript:
+                st.session_state["nalu_pending_prompt"] = transcript
+
     prompt = st.chat_input("Tell Nalu what to do…", disabled=pid is None)
+    pending = st.session_state.pop("nalu_pending_prompt", None)
+    if pending and not prompt:
+        prompt = pending
+
     if prompt:
         with st.chat_message("user"):
             st.write(prompt)
         with st.chat_message("assistant"):
             with st.spinner("Nalu is working…"):
                 ok, answer = asyncio.run(_send_intent(prompt, config.PLANNER_TASK_TIMEOUT_S))
-            st.write(answer if answer else ("done" if ok else "failed"))
+            reply = answer if answer else ("done" if ok else "failed")
+            st.write(reply)
+            if speak_back and ok and answer:
+                _speak_async(answer)
         st.rerun()
 
 with tab_overview:
@@ -179,6 +231,24 @@ with tab_overview:
         df = pd.DataFrame({"action": list(metrics["action_counts"].keys()), "count": list(metrics["action_counts"].values())})
         st.bar_chart(df.set_index("action"))
 
+    from .analytics import failure_kind_breakdown, summarize_runs
+
+    summary = summarize_runs()
+    if summary.total > 0:
+        st.subheader("Failure modes")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tasks finished", summary.completed + summary.failed)
+        c2.metric("Completion rate", f"{summary.completion_rate:.0%}")
+        top = summary.top_failure
+        c3.metric("Top failure", f"{top[0]} ({top[1]})" if top else "—")
+
+        kinds = failure_kind_breakdown(summary)
+        if kinds:
+            kdf = pd.DataFrame(
+                {"kind": list(kinds.keys()), "count": list(kinds.values())}
+            )
+            st.bar_chart(kdf.set_index("kind"))
+
 with tab_runs:
     runs = sorted([p for p in config.RUNS_DIR.glob("*") if p.is_dir()], reverse=True)
     if not runs:
@@ -187,14 +257,44 @@ with tab_runs:
         choice = st.selectbox("Run", [r.name for r in runs])
         run = config.RUNS_DIR / choice
         actions_path = run / "actions.jsonl"
+
+        from .timeline import build_run_timeline
+
+        timeline = build_run_timeline(run)
+        if timeline:
+            st.subheader("Timeline")
+            severity_color = {
+                "success": "#1f9d55",
+                "warning": "#d97706",
+                "failure": "#dc2626",
+                "info": "#6b7280",
+            }
+            for entry in timeline:
+                color = severity_color.get(entry.severity, "#6b7280")
+                step_label = f"step {entry.step}" if entry.step is not None else "—"
+                st.markdown(
+                    f"<div style='border-left:3px solid {color};padding:4px 10px;"
+                    f"margin:2px 0;font-family:monospace;font-size:13px;'>"
+                    f"<b>{step_label}</b> · <code>{entry.topic}</code> — {entry.summary}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
         if actions_path.exists():
             records = [json.loads(line) for line in actions_path.read_text().splitlines() if line.strip()]
             st.dataframe(pd.DataFrame(records))
+            show_annotated = st.toggle(
+                "Show action markers",
+                value=True,
+                help="Overlay click rings, drag lines, and action banners on screenshots.",
+            )
             for rec in records:
-                shot = run / f"step_{rec['step']:03d}.jpg"
-                if shot.exists():
+                raw = run / f"step_{rec['step']:03d}.jpg"
+                annotated = run / f"step_{rec['step']:03d}_decided.jpg"
+                preferred = annotated if (show_annotated and annotated.exists()) else raw
+                if preferred.exists():
                     with st.expander(f"Step {rec['step']}: {rec['action']} — {rec.get('reason','')}"):
-                        st.image(str(shot), use_container_width=True)
+                        st.image(str(preferred), use_container_width=True)
                         st.code(json.dumps(rec, indent=2), language="json")
         else:
             st.warning("No actions.jsonl in this run.")

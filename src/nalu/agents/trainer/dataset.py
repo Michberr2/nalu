@@ -24,7 +24,26 @@ class DatasetSummary:
     eval_runs: list[str] = field(default_factory=list)
 
 
-def _run_completed(records: list[dict]) -> bool:
+def _read_meta(run: Path) -> dict:
+    meta_path = run / "meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _run_completed(records: list[dict], meta: dict) -> bool:
+    """Decide whether a run is high-quality enough to train on.
+
+    Prefers the planner's stamped `meta.status` (set by the run-outcomes work):
+    only `completed` survives. Legacy runs without a status field fall back to
+    the older "has a `done` action" heuristic so pre-Phase-5 data still flows.
+    """
+    status = meta.get("status")
+    if status:
+        return status == "completed"
     return any(r.get("action") == "done" for r in records)
 
 
@@ -86,20 +105,13 @@ def collect(
         records = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
         if not records:
             continue
-        completed = _run_completed(records)
+        meta = _read_meta(run)
+        completed = _run_completed(records, meta)
         if completed:
             runs_with_done += 1
         if only_completed and not completed:
             continue
-
-        meta_path = run / "meta.json"
-        goal = ""
-        if meta_path.exists():
-            try:
-                goal = json.loads(meta_path.read_text()).get("goal", "")
-            except json.JSONDecodeError:
-                pass
-        eligible.append((run, goal, records))
+        eligible.append((run, meta.get("goal", ""), records))
 
     # Run-level split (not example-level — frames from the same run share goal,
     # screen, and intent, so example-level shuffling leaks information).

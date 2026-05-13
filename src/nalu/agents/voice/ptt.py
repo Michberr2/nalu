@@ -32,12 +32,15 @@ class PushToTalk:
         self._busy = False
         self._listener: keyboard.GlobalHotKeys | None = None
 
-    def _trigger(self) -> None:
+    def trigger(self) -> None:
+        """Start a record+transcribe cycle if one isn't already in flight."""
         with self._lock:
             if self._busy:
                 return
             self._busy = True
         threading.Thread(target=self._capture, daemon=True).start()
+
+    _trigger = trigger  # back-compat alias for the hotkey callback
 
     def _capture(self) -> None:
         try:

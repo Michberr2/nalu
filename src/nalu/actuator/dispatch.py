@@ -52,6 +52,28 @@ class Actuator:
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
             time.sleep(0.04)
 
+    def drag(self, x1: int, y1: int, x2: int, y2: int, steps: int = 20) -> None:
+        """Press at (x1,y1), drag to (x2,y2), release. `steps` controls smoothness."""
+        self._check()
+        import Quartz
+        btn = Quartz.kCGMouseButtonLeft
+        # Press
+        ev_down = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, (x1, y1), btn)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_down)
+        # Intermediate drag points so the OS sees a real drag, not a teleport-and-release.
+        steps = max(1, int(steps))
+        for i in range(1, steps + 1):
+            self._check()
+            t = i / steps
+            ix = int(x1 + (x2 - x1) * t)
+            iy = int(y1 + (y2 - y1) * t)
+            ev = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDragged, (ix, iy), btn)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+            time.sleep(0.01)
+        # Release
+        ev_up = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseUp, (x2, y2), btn)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev_up)
+
     def scroll(self, dx: int, dy: int) -> None:
         self._check()
         import Quartz

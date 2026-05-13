@@ -22,10 +22,19 @@ def fake_root(tmp_path: Path, monkeypatch):
     return tmp_path, runs_dir
 
 
-def _make_run(runs_dir: Path, name: str, n_steps: int = 3, with_done: bool = True) -> Path:
+def _make_run(
+    runs_dir: Path,
+    name: str,
+    n_steps: int = 3,
+    with_done: bool = True,
+    status: str | None = None,
+) -> Path:
     run = runs_dir / name
     run.mkdir()
-    (run / "meta.json").write_text(json.dumps({"goal": f"goal-{name}"}))
+    meta: dict = {"goal": f"goal-{name}"}
+    if status is not None:
+        meta["status"] = status
+    (run / "meta.json").write_text(json.dumps(meta))
     actions: list[dict] = []
     for i in range(n_steps):
         (run / f"step_{i:03d}.jpg").write_bytes(b"x")
@@ -110,6 +119,50 @@ def test_collect_skips_failed_runs_by_default(fake_root):
     summary = collect(runs_dir=runs_dir)
     runs_in_dataset = {r["run"] for r in _read_jsonl(summary.out_path)}
     assert runs_in_dataset == {"good"}
+
+
+def test_collect_skips_runs_with_failed_status_even_if_done_emitted(fake_root):
+    _, runs_dir = fake_root
+    # `done` was emitted but verifier denied → planner stamped status="failed".
+    # Old heuristic would keep it; the meta-aware check must drop it.
+    _make_run(runs_dir, "denied", with_done=True, status="failed")
+    _make_run(runs_dir, "good", with_done=True, status="completed")
+
+    summary = collect(runs_dir=runs_dir)
+    runs_in_dataset = {r["run"] for r in _read_jsonl(summary.out_path)}
+    assert runs_in_dataset == {"good"}
+
+
+def test_collect_prefers_meta_status_over_done_heuristic(fake_root):
+    _, runs_dir = fake_root
+    # No done action, but planner stamped status="completed" anyway (e.g. answer
+    # came back via verify_completion path). Trust the stamped status.
+    _make_run(runs_dir, "stamped", with_done=False, status="completed")
+
+    summary = collect(runs_dir=runs_dir)
+    runs_in_dataset = {r["run"] for r in _read_jsonl(summary.out_path)}
+    assert runs_in_dataset == {"stamped"}
+
+
+def test_collect_legacy_runs_without_status_use_done_heuristic(fake_root):
+    _, runs_dir = fake_root
+    # Legacy run (pre-Phase-5): no status field. Falls back to has-done check.
+    _make_run(runs_dir, "legacy_good", with_done=True)
+    _make_run(runs_dir, "legacy_bad", with_done=False)
+
+    summary = collect(runs_dir=runs_dir)
+    runs_in_dataset = {r["run"] for r in _read_jsonl(summary.out_path)}
+    assert runs_in_dataset == {"legacy_good"}
+
+
+def test_collect_only_completed_false_keeps_failed_runs(fake_root):
+    _, runs_dir = fake_root
+    _make_run(runs_dir, "denied", with_done=True, status="failed")
+    _make_run(runs_dir, "good", with_done=True, status="completed")
+
+    summary = collect(runs_dir=runs_dir, only_completed=False)
+    runs_in_dataset = {r["run"] for r in _read_jsonl(summary.out_path)}
+    assert runs_in_dataset == {"denied", "good"}
 
 
 def test_collect_full_dataset_jsonl_unaffected_by_split(fake_root):

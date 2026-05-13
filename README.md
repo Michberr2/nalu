@@ -6,7 +6,7 @@ Nalu is a standalone AI assistant that runs entirely on your Mac. It captures th
 
 ## Status
 
-Phase 2 shipped. Full closed-loop training pipeline: collect a dataset from real sessions with a leak-free run-level train/eval split, fine-tune a LoRA adapter, evaluate base vs adapter and compare side-by-side, then hot-swap the running daemon to the new adapter without restart. See [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the full roadmap.
+Phase 4 shipped. Full closed-loop pipeline — capture, reason, act, learn, merge, swap. Includes a menu-bar shell, "Hey Jarvis" wake-word, and a guided first-run wizard. See [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the full roadmap.
 
 ## Requirements
 
@@ -17,27 +17,60 @@ Phase 2 shipped. Full closed-loop training pipeline: collect a dataset from real
 ## Install
 
 ```bash
-git clone <this repo> ai_n4lu
-cd ai_n4lu
+git clone <this repo> nalu
+cd nalu
 uv sync
+uv run nalu onboard
 ```
 
-On first run, macOS will prompt for these permissions — all required:
+`nalu onboard` walks you through the required permissions, downloads the Piper voice and faster-whisper STT models, warms the vision model, and confirms a real screenshot decodes round-trip. It is idempotent — re-run any time.
 
-- **Screen Recording** — so Nalu can see what you see.
-- **Accessibility** — so Nalu can move the mouse and type.
-- **Input Monitoring** — so Nalu's global pause hotkey works.
-- **Microphone** — only if you use voice input.
+Permissions Nalu will ask for:
+
+- **Screen Recording** — so Nalu can see what you see (required).
+- **Accessibility** — so Nalu can move the mouse and type (required).
+- **Input Monitoring** — so the global pause hotkey works.
+- **Microphone** — only if you use voice input or the wake-word.
 
 ## Run
 
 ```bash
-uv run nalu start         # launches all agents + dashboard
-uv run nalu dashboard     # dashboard only
-uv run nalu ask "..."     # one-shot text query
+uv run nalu serve              # start the daemon (model stays warm)
+uv run nalu ask "..."          # one-shot text query
+uv run nalu dashboard          # Streamlit dashboard
+uv run nalu menubar            # macOS status-bar shell
 ```
 
-Global hotkey **⌃⌥⌘.** instantly pauses all input dispatch. Press again to resume.
+Global hotkey **⌃⌥⌘.** instantly pauses all input dispatch. Press again to resume. **⌃⌥⌘+Space** is push-to-talk.
+
+Set `NALU_WAKEWORD=1` to enable always-listening "Hey Jarvis" wake-word activation.
+
+## CLI
+
+```text
+nalu doctor / setup            # check / open the right macOS Settings panes
+nalu serve / stop / status     # daemon lifecycle
+nalu ask "<task>"              # one-shot or via daemon
+nalu speak / listen            # voice primitives
+nalu dashboard                 # Streamlit UI
+
+nalu train collect             # real session runs -> JSONL dataset (with eval split)
+nalu train run <dataset>       # QLoRA fine-tune via mlx_vlm.lora
+nalu train eval <dataset>      # action accuracy + click hit-rate report
+nalu train activate <run>      # apply adapter; hot-swap a running daemon
+nalu train deactivate          # revert to base
+nalu train report              # dataset inventory + retraining recommendations
+
+nalu model list / active       # base-model registry
+nalu model register <id> <p>   # add a base model
+nalu model use <id>            # set active + hot-swap running daemon
+nalu model merge <repo>...     # mergekit pipeline + MLX quantize + register
+nalu model merges              # past merge runs
+
+nalu menubar                   # NSStatusBar shell (needs `nalu serve` running)
+nalu wake [--keyword]          # standalone wake-word tester
+nalu onboard [--yes]           # first-run wizard
+```
 
 ## Architecture
 
@@ -45,15 +78,35 @@ Stand-alone agents that coordinate over a local Unix domain socket bus. No agent
 
 ```
 agents/
-  vision/   UI-TARS-1.5-7B via MLX-VLM — screenshot + intent -> action
-  voice/    Piper TTS (en_GB-alan) + faster-whisper STT
-  planner/  perceive -> reason -> act loop, step caps, timeouts
-  trainer/  eval harness + retrain recommendations
-bus/        UDS pub/sub
-capture/    PyObjC screen capture
-actuator/   Quartz CGEvent dispatch + global pause hotkey
-dashboard/  Streamlit, real data only
+  vision/    UI-TARS-1.5-7B via MLX-VLM, JSON-backed model registry,
+             LoRA hot-swap, action parser hardened to UI-TARS / JSON /
+             Python-dict / natural-language outputs.
+  voice/     Piper TTS (en_GB-alan-medium) + faster-whisper STT,
+             push-to-talk, openwakeword "Hey Jarvis" wake-word.
+  planner/   perceive -> reason -> act loop with step caps, timeouts,
+             and conversation history injected into the vision prompt.
+  trainer/   QLoRA fine-tune runner, eval harness, side-by-side eval
+             comparison, mergekit + MLX quantize pipeline.
+bus/         UDS pub/sub (asyncio).
+capture/     PyObjC continuous screen capture.
+actuator/    Quartz CGEvent dispatch + global pause hotkey.
+menubar/     NSStatusBar shell over a pure-Python state machine.
+dashboard/   Streamlit, real data only.
+onboarding   First-run wizard (permissions -> models -> round-trip).
 ```
+
+State lives under `~/Library/Application Support/Nalu/` — see [`BUILD_PLAN.md`](./BUILD_PLAN.md) for the layout.
+
+## Develop
+
+```bash
+uv sync
+uv run pytest           # 130+ tests, all offline
+uv run nalu serve       # in one terminal
+uv run nalu dashboard   # in another
+```
+
+Contributions welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Voice & ethics
 
@@ -61,4 +114,4 @@ Nalu uses a Jarvis-*inspired* persona — dry, formal, British, addresses the us
 
 ## License
 
-Apache 2.0. See `LICENSE`.
+Apache 2.0. See [`LICENSE`](./LICENSE).

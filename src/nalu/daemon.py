@@ -15,7 +15,7 @@ from . import config
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.vision import VisionAgent
-from .agents.voice import PushToTalk, TTS
+from .agents.voice import PushToTalk, TTS, WakeWordRunner
 from .bus import BusClient, BusServer
 from .capture import ContinuousCapture
 
@@ -86,13 +86,23 @@ async def serve() -> None:
     pause: PauseController | None = None
     capture: ContinuousCapture | None = None
     ptt: PushToTalk | None = None
+    wake: WakeWordRunner | None = None
     bus_server = None
     events_log = None
     try:
         server = BusServer()
         bus_server = await server.start()
 
-        pause = PauseController()
+        pause_pub = BusClient(source="pause")
+        await pause_pub.connect()
+        loop_for_pause = asyncio.get_running_loop()
+
+        def _pause_changed(paused: bool) -> None:
+            asyncio.run_coroutine_threadsafe(
+                pause_pub.publish("pause_state", {"paused": paused}), loop_for_pause,
+            )
+
+        pause = PauseController(on_change=_pause_changed)
         pause.start()
         actuator = Actuator(pause)
 
@@ -113,9 +123,31 @@ async def serve() -> None:
         await log_bus.connect()
         await log_bus.subscribe("*", _log_event)
 
+        history: deque[dict] = deque(maxlen=20)
+
         planner_bus = BusClient(source="planner")
         await planner_bus.connect()
-        planner = Planner(planner_bus, actuator, vision, pause, capture=capture)
+        decomposer = None
+        if config.USE_LLM_PLANNER:
+            from .agents.planner_llm import LLMDecomposer
+
+            decomposer = LLMDecomposer()
+            log.info("loading_planner_llm", model=decomposer.model_id)
+            try:
+                await asyncio.to_thread(decomposer.load)
+                log.info("planner_llm_loaded")
+            except Exception:
+                log.exception("planner_llm_load_failed")
+                decomposer = None
+        planner = Planner(
+            planner_bus,
+            actuator,
+            vision,
+            pause,
+            capture=capture,
+            conversation=history,
+            decomposer=decomposer,
+        )
         await planner.run()
 
         voice_bus = BusClient(source="voice")
@@ -139,12 +171,36 @@ async def serve() -> None:
         log.info("stt_model_loaded")
         ptt.start()
 
+        if config.WAKEWORD_ENABLED:
+            from .agents.voice import OpenWakeWordSpotter
+
+            def _on_wake(keyword: str, score: float) -> None:
+                log.info("wakeword_detected", keyword=keyword, score=score)
+                asyncio.run_coroutine_threadsafe(
+                    voice_bus.publish("wakeword_detected", {"keyword": keyword, "score": score}), loop,
+                )
+                ptt.trigger()  # reuse PTT capture path
+
+            try:
+                spotter = OpenWakeWordSpotter(models=[config.WAKEWORD_KEYWORD])
+                wake = WakeWordRunner(
+                    on_wake=_on_wake,
+                    spotter=spotter,
+                    threshold=config.WAKEWORD_THRESHOLD,
+                    cooldown_s=config.WAKEWORD_COOLDOWN_S,
+                )
+                log.info("loading_wakeword_model", keyword=config.WAKEWORD_KEYWORD)
+                await asyncio.to_thread(wake.warm)
+                wake.start()
+                log.info("wakeword_running", keyword=config.WAKEWORD_KEYWORD, threshold=config.WAKEWORD_THRESHOLD)
+            except Exception as e:
+                log.warning("wakeword_disabled", reason=str(e))
+                wake = None
+
         tts = TTS()
         log.info("loading_tts_voice", voice=config.TTS_VOICE)
         await asyncio.to_thread(tts.load)
         log.info("tts_voice_loaded")
-
-        history: deque[dict] = deque(maxlen=20)
 
         def _speak_async(text: str) -> None:
             if not text:
@@ -184,11 +240,31 @@ async def serve() -> None:
                 log.exception("vision_swap_failed")
                 await chat_bus.publish("vision_swap_failed", {"reason": str(e)})
 
+        async def _on_swap_model(ev) -> None:
+            model_id = ev.payload.get("model_id")
+            if not model_id:
+                await chat_bus.publish("vision_model_swap_failed", {"reason": "missing model_id"})
+                return
+            log.info("vision_model_swap_starting", model_id=model_id)
+            try:
+                applied = await asyncio.to_thread(vision.swap_model, model_id)
+                log.info("vision_model_swap_completed", model=applied)
+                await chat_bus.publish("vision_model_swap_completed", {"model": applied})
+            except Exception as e:
+                log.exception("vision_model_swap_failed")
+                await chat_bus.publish("vision_model_swap_failed", {"reason": str(e)})
+
+        async def _on_pause_request(ev) -> None:
+            wanted = bool(ev.payload.get("paused"))
+            pause.set(wanted)
+
         await chat_bus.subscribe("user_intent", _on_intent)
         await chat_bus.subscribe("task_completed", _on_completed)
         await chat_bus.subscribe("task_failed", _on_failed)
         await chat_bus.subscribe("history_request", _on_history_request)
         await chat_bus.subscribe("vision_swap_adapter", _on_swap_adapter)
+        await chat_bus.subscribe("vision_swap_model", _on_swap_model)
+        await chat_bus.subscribe("pause_request", _on_pause_request)
 
         stop_evt = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -204,6 +280,8 @@ async def serve() -> None:
         await stop_evt.wait()
     finally:
         log.info("daemon_stopping")
+        if wake is not None:
+            wake.stop()
         if ptt is not None:
             ptt.stop()
         if capture is not None:

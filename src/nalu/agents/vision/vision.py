@@ -39,6 +39,9 @@ finished(content='xxx') # Use escape characters \\', \\", and \\n in content par
 - Use English in `Thought` part.
 - Summarize your next action (with its target element) in one sentence in `Thought` part.
 - Coordinates are absolute pixel positions in the screenshot.
+- Every reply MUST contain an `Action:` line. Do not reply with only a description of the screen.
+- If the target app or element is not visible, launch it via Spotlight: `hotkey(key='cmd space')`, then on the next turn `type(content='AppName\\n')`.
+- When the user goal is to compute or retrieve a value, finish with `finished(content='<the value>')` once you have it.
 
 ## User Instruction
 """
@@ -195,8 +198,11 @@ class Action:
 class VisionAgent:
     """Wraps a local MLX-VLM model. Loads lazily so tests / dashboard don't need it."""
 
-    def __init__(self, model_id: str = config.VISION_MODEL):
-        self.model_id = model_id
+    def __init__(self, model_id: str | None = None):
+        from . import registry
+
+        self._registry = registry
+        self.model_id = model_id or registry.active_model().path
         self._model = None
         self._processor = None
         self._cfg = None
@@ -222,6 +228,17 @@ class VisionAgent:
         with self._lock:
             self._load_locked(adapter_override=target)
             return self._adapter_dir
+
+    def swap_model(self, model_id: str, adapter: Path | None | object = _SENTINEL) -> str:
+        """Swap to a different registered base model (and optionally re-apply an adapter).
+
+        Defaults to the registry's active adapter pointer. Pass `None` to drop adapters.
+        """
+        new_path = self._registry.resolve_model_path(model_id)
+        with self._lock:
+            self.model_id = new_path
+            self._load_locked(adapter_override=adapter)
+            return self.model_id
 
     def _load_locked(self, adapter_override: Path | None | object) -> None:
         from mlx_vlm import load
@@ -259,13 +276,21 @@ class VisionAgent:
             self._model = apply_lora_layers(self._model, str(adapter))
             self._adapter_dir = adapter
 
-    def decide(self, image: Image.Image, goal: str, history: list[str] | None = None) -> Action:
+    def decide(
+        self,
+        image: Image.Image,
+        goal: str,
+        history: list[str] | None = None,
+        conversation: str | None = None,
+    ) -> Action:
         self.load()
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
 
         history_str = "\n".join(history or []) or "(no prior steps)"
+        conv_block = f"## Conversation\n{conversation.strip()}\n\n" if conversation and conversation.strip() else ""
         user = (
+            f"{conv_block}"
             f"## User Instruction\n{goal}\n\n"
             f"## Action History\n{history_str}\n\n"
             f"What is your next Thought and Action?"
@@ -285,3 +310,28 @@ class VisionAgent:
             )
         text = out.text if hasattr(out, "text") else str(out)
         return Action.parse(text)
+
+    def judge(self, image: Image.Image, prompt: str, *, max_tokens: int = 256) -> str:
+        """Run the model on a custom prompt and return raw output text (no Action parsing).
+
+        Used by the planner's completion verifier. Reuses the same lock as `decide`,
+        so verification calls and ordinary perceive→reason→act calls queue safely.
+        """
+        self.load()
+        from mlx_vlm import generate
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        with self._lock:
+            formatted = apply_chat_template(
+                self._processor, self._cfg, prompt, num_images=1, system_prompt=""
+            )
+            out = generate(
+                self._model,
+                self._processor,
+                formatted,
+                [image],
+                max_tokens=max_tokens,
+                temperature=0.0,
+                verbose=False,
+            )
+        return out.text if hasattr(out, "text") else str(out)

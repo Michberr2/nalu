@@ -11,9 +11,6 @@ dist/
 *.egg-info/
 *.egg
 
-# uv
-uv.lock
-
 # Project
 models/
 runs/
