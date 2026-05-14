@@ -21,8 +21,12 @@ from .history import compact_history
 from .jitter import jitter_click_args
 from .loops import LoopDetector
 from .screen_change import evaluate_action_effect
+from .settle import wait_for_screen_settle
 from .validate import validate_action
 from .verifier import JudgeCallable, verify_completion
+
+
+POST_ACTION_FALLBACK_SLEEP_S = 0.4
 
 
 CONVERSATION_TURNS_FOR_PLANNER = 6
@@ -417,7 +421,7 @@ class Planner:
                         ctx.prev_shot = shot
                         ctx.prev_action = jit
                         ctx.prev_action_kind = jit.kind
-                        await asyncio.sleep(0.4)
+                        await self._settle_after_action(step)
                         continue
 
             try:
@@ -570,7 +574,7 @@ class Planner:
             ctx.prev_shot = shot
             ctx.prev_action_kind = action.kind
             ctx.prev_action = action
-            await asyncio.sleep(0.4)
+            await self._settle_after_action(step)
         else:
             outcome.status = "failed"
             outcome.reason = "max_steps_exceeded"
@@ -582,6 +586,33 @@ class Planner:
 
     def _dispatch(self, action: Action, shot) -> None:
         dispatch_action(action, shot, self.actuator)
+
+    async def _settle_after_action(self, step: int) -> None:
+        """Active wait for the screen to stabilize after dispatching an action.
+
+        Publishes a `screen_settled` bus event so dashboards / evals can see
+        per-step latency. Falls back to a fixed sleep if continuous capture
+        isn't wired (e.g. unit tests, headless runs).
+        """
+        if self.capture is None:
+            await asyncio.sleep(POST_ACTION_FALLBACK_SLEEP_S)
+            return
+
+        def _frame_getter():
+            shot = self.capture.latest_frame()
+            return shot.image if shot is not None else None
+
+        result = await wait_for_screen_settle(_frame_getter)
+        await self.bus.publish(
+            "screen_settled",
+            {
+                "step": step,
+                "elapsed_ms": int(result.elapsed_s * 1000),
+                "polls": result.polls,
+                "last_diff": result.last_diff,
+                "stable": result.stable,
+            },
+        )
 
 
 def dispatch_action(action: Action, shot, actuator) -> None:
