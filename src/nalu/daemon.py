@@ -15,6 +15,7 @@ from . import config
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.responder import Responder, make_default_generate_fn
+from .agents.voice.proactive import ProactiveSpeaker, is_proactive_enabled
 from .agents.vision import VisionAgent
 from .agents.voice import PushToTalk, TTS, WakeWordRunner
 from .bus import BusClient, BusServer
@@ -318,6 +319,13 @@ async def serve() -> None:
         await chat_bus.subscribe("task_completed", _on_completed)
         await chat_bus.subscribe("task_failed", _on_failed)
         await chat_bus.subscribe("responder_reply", _on_responder_reply)
+
+        if is_proactive_enabled():
+            proactive_bus = BusClient(source="proactive")
+            await proactive_bus.connect()
+            proactive = ProactiveSpeaker(proactive_bus, speak_fn=_speak_async, enabled=True)
+            await proactive.run()
+            log.info("proactive_voice_enabled")
         await chat_bus.subscribe("history_request", _on_history_request)
         await chat_bus.subscribe("vision_swap_adapter", _on_swap_adapter)
         await chat_bus.subscribe("vision_swap_model", _on_swap_model)
