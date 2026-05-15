@@ -231,6 +231,50 @@ with tab_overview:
         df = pd.DataFrame({"action": list(metrics["action_counts"].keys()), "count": list(metrics["action_counts"].values())})
         st.bar_chart(df.set_index("action"))
 
+    from .interaction import compute_interaction_metrics
+
+    st.subheader("Interaction quality")
+    st.caption(
+        "How fast Nalu *feels* — TTFA from intent to first action, TTFR from query to "
+        "spoken reply, screen-settle distribution, and inter-step gap."
+    )
+    interaction = compute_interaction_metrics()
+    ic1, ic2, ic3, ic4 = st.columns(4)
+    ic1.metric(
+        "Median TTFA",
+        f"{interaction.median_ttfa_ms:.0f} ms" if interaction.median_ttfa_ms is not None else "—",
+        help="user_intent → first action_decided",
+    )
+    ic2.metric(
+        "Median TTFR",
+        f"{interaction.median_ttfr_ms:.0f} ms" if interaction.median_ttfr_ms is not None else "—",
+        help="user_query → responder_reply",
+    )
+    ic3.metric(
+        "Median settle",
+        f"{interaction.median_settle_ms:.0f} ms" if interaction.median_settle_ms is not None else "—",
+        help="screen_settled elapsed_ms",
+    )
+    ic4.metric(
+        "Median inter-step gap",
+        f"{interaction.median_inter_step_gap_ms:.0f} ms"
+        if interaction.median_inter_step_gap_ms is not None
+        else "—",
+        help="action_decided → next action_decided",
+    )
+    ic5, ic6, ic7, ic8 = st.columns(4)
+    ic5.metric("p95 settle", f"{interaction.p95_settle_ms:.0f} ms" if interaction.p95_settle_ms is not None else "—")
+    ic6.metric(
+        "Settle stability",
+        f"{interaction.settle_stability_rate:.0%}" if interaction.settle_stability_rate is not None else "—",
+        help="fraction of settles that hit the stability threshold before capping",
+    )
+    ic7.metric("Intents observed", interaction.intents_observed)
+    ic8.metric("Queries observed", interaction.queries_observed)
+    st.caption(
+        f"Proactive utterances (would-have): {interaction.proactive_utterances}"
+    )
+
     from .analytics import failure_kind_breakdown, summarize_runs
 
     summary = summarize_runs()
