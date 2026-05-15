@@ -131,7 +131,7 @@ def test_default_steps_includes_expected_names():
     from nalu.onboarding import default_steps
 
     names = [s.name for s in default_steps()]
-    assert names == ["disk", "permissions", "tts", "stt", "wake", "vision", "screenshot"]
+    assert names == ["disk", "permissions", "tts", "stt", "wake", "vision", "planner_llm", "screenshot"]
 
 
 def test_disk_step_passes_when_volume_has_room(tmp_path, monkeypatch):

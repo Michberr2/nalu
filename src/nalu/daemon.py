@@ -14,6 +14,7 @@ import structlog
 from . import config
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
+from .agents.responder import Responder, make_default_generate_fn
 from .agents.vision import VisionAgent
 from .agents.voice import PushToTalk, TTS, WakeWordRunner
 from .bus import BusClient, BusServer
@@ -47,6 +48,40 @@ def daemon_pid() -> int | None:
         return int(config.DAEMON_PID.read_text().strip())
     except (ValueError, OSError):
         return None
+
+
+CONVERSATIONAL_PREFIXES = (
+    "what ", "what's ", "whats ", "who ", "who's ", "whos ",
+    "when ", "where ", "why ", "how ",
+    "is ", "are ", "do ", "does ", "did ", "can ", "could ", "would ", "will ",
+    "tell me ", "explain ", "say ", "thanks", "thank you", "hi ", "hello",
+    "hey ", "good morning", "good afternoon", "good evening",
+)
+ACTION_HINTS = (
+    "open ", "close ", "click ", "type ", "search ", "go to ", "navigate ",
+    "find ", "save ", "delete ", "scroll ", "send ", "copy ", "paste ",
+    "create ", "make ", "write ", "edit ", "switch ", "select ", "drag ",
+    "drop ", "minimize ", "maximize ", "quit ", "launch ",
+)
+CONVERSATIONAL_MAX_WORDS = 14
+
+
+def classify_user_text(text: str) -> str:
+    """Return 'query' for short conversational turns, 'intent' for actionable goals.
+
+    Heuristic-only — no model call. A query word at the front and no action verb
+    means we hand it to the Responder; otherwise the Planner gets it. Anything
+    above ~14 words is assumed to be a goal, regardless of phrasing.
+    """
+    s = (text or "").strip().lower()
+    if not s:
+        return "intent"
+    word_count = len(s.split())
+    if any(s.startswith(h) for h in ACTION_HINTS):
+        return "intent"
+    if word_count <= CONVERSATIONAL_MAX_WORDS and any(s.startswith(p) for p in CONVERSATIONAL_PREFIXES):
+        return "query"
+    return "intent"
 
 
 def stop() -> bool:
@@ -150,14 +185,26 @@ async def serve() -> None:
         )
         await planner.run()
 
+        responder = None
+        if decomposer is not None:
+            responder_bus = BusClient(source="responder")
+            await responder_bus.connect()
+            responder = Responder(
+                responder_bus,
+                generate_fn=make_default_generate_fn(decomposer),
+            )
+            await responder.run()
+            log.info("responder_ready")
+
         voice_bus = BusClient(source="voice")
         await voice_bus.connect()
         loop = asyncio.get_running_loop()
 
         def _on_transcript(text: str) -> None:
             log.info("ptt_transcript", text=text)
+            route = "user_query" if responder is not None and classify_user_text(text) == "query" else "user_intent"
             asyncio.run_coroutine_threadsafe(
-                voice_bus.publish("user_intent", {"text": text, "via": "voice"}), loop
+                voice_bus.publish(route, {"text": text, "via": "voice"}), loop
             )
 
         def _on_listening(listening: bool) -> None:
@@ -222,6 +269,14 @@ async def serve() -> None:
             reason = ev.payload.get("reason", "") or ""
             history.append({"role": "assistant", "text": f"failed: {reason}", "ts": ev.ts})
 
+        async def _on_responder_reply(ev) -> None:
+            reply = ev.payload.get("reply", "") or ""
+            history.append({"role": "assistant", "text": reply, "ts": ev.ts})
+            _speak_async(reply)
+
+        async def _on_user_query(ev) -> None:
+            history.append({"role": "user", "text": ev.payload.get("text", ""), "ts": ev.ts})
+
         async def _on_history_request(ev) -> None:
             await chat_bus.publish("conversation_history", {"history": list(history)})
 
@@ -259,8 +314,10 @@ async def serve() -> None:
             pause.set(wanted)
 
         await chat_bus.subscribe("user_intent", _on_intent)
+        await chat_bus.subscribe("user_query", _on_user_query)
         await chat_bus.subscribe("task_completed", _on_completed)
         await chat_bus.subscribe("task_failed", _on_failed)
+        await chat_bus.subscribe("responder_reply", _on_responder_reply)
         await chat_bus.subscribe("history_request", _on_history_request)
         await chat_bus.subscribe("vision_swap_adapter", _on_swap_adapter)
         await chat_bus.subscribe("vision_swap_model", _on_swap_model)
