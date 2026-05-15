@@ -15,6 +15,11 @@ from . import config
 from .actuator import Actuator, PauseController
 from .agents.planner import Planner
 from .agents.responder import Responder, make_default_generate_fn
+from .agents.voice.always_on import (
+    AlwaysOnRunner,
+    chunked_sounddevice_source,
+    make_silero_vad_fn,
+)
 from .agents.voice.proactive import ProactiveSpeaker, is_proactive_enabled
 from .agents.vision import VisionAgent
 from .agents.voice import PushToTalk, TTS, WakeWordRunner
@@ -319,6 +324,36 @@ async def serve() -> None:
         await chat_bus.subscribe("task_completed", _on_completed)
         await chat_bus.subscribe("task_failed", _on_failed)
         await chat_bus.subscribe("responder_reply", _on_responder_reply)
+
+        if os.environ.get("NALU_ALWAYS_ON_STT", "0") not in ("0", "", "false", "False"):
+            try:
+                always_on_stt = ptt._stt  # reuse the warm STT model
+
+                def _on_always_on_transcript(text: str) -> None:
+                    log.info("always_on_transcript", text=text)
+                    route = "user_query" if responder is not None and classify_user_text(text) == "query" else "user_intent"
+                    asyncio.run_coroutine_threadsafe(
+                        voice_bus.publish(route, {"text": text, "via": "always_on"}), loop
+                    )
+
+                src_iter = chunked_sounddevice_source()
+
+                def _source():
+                    try:
+                        return next(src_iter)
+                    except StopIteration:
+                        return None
+
+                always_on = AlwaysOnRunner(
+                    audio_source=_source,
+                    vad_fn=make_silero_vad_fn(),
+                    transcribe_fn=lambda s, sr: always_on_stt.transcribe_array(s, sr),
+                    on_transcript=_on_always_on_transcript,
+                )
+                always_on.start()
+                log.info("always_on_stt_started")
+            except Exception:
+                log.exception("always_on_stt_start_failed")
 
         if is_proactive_enabled():
             proactive_bus = BusClient(source="proactive")
